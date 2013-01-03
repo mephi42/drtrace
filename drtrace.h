@@ -5,8 +5,11 @@
 /** Basic block translation information. */
 #define TYPE_BB 0x42424242
 struct bb_t {
+  /** Identifier. */
+  uintptr_t id;
+
   /** Address of first instruction. */
-  uint64_t pc;
+  uintptr_t pc;
 
   /** Raw bytes. */
   uint8_t code[];
@@ -19,7 +22,7 @@ struct trace_t {
   uint32_t thread_id;
 
   /** Basic block identifiers. */
-  uint32_t bb_id[];
+  uintptr_t bb_id[];
 };
 
 /** Type, length and value. */
