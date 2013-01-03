@@ -17,15 +17,30 @@ file_t trace_file;
 /** Synchronizes accesses to trace file handle. */
 void* trace_mutex;
 
+void handle_bb_exec(void* tag) {
+  void* drcontext;
+  struct thread_buffer_t* tb;
+
+  drcontext = dr_get_current_drcontext();
+  tb = dr_get_tls_field(drcontext);
+  if(tb_available(tb) < sizeof(void*)) {
+    tb_flush(tb);
+  }
+  *(void**)tb->current = tag;
+  tb->current += sizeof(void*);
+}
+
 dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                           bool for_trace, bool translating) {
+  instr_t* first;
   struct thread_buffer_t* tb;
   app_pc pc;
   bool flushed;
   struct bb_t* bb_data;
   void* current;
 
-  pc = instr_get_app_pc(instrlist_first(bb));
+  first = instrlist_first(bb);
+  pc = instr_get_app_pc(first);
   tb = dr_get_tls_field(drcontext);
 
 #ifdef TRACE_DEBUG
@@ -65,6 +80,20 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
       }
     }
   }
+
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: instrumenting..\n");
+#endif
+  dr_insert_clean_call(drcontext,
+                       bb,
+                       first,
+                       &handle_bb_exec,
+                       false,
+                       1,
+                       OPND_CREATE_INTPTR(tag));
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: done\n");
+#endif
 
   return DR_EMIT_DEFAULT;
 }
