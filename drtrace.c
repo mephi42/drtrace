@@ -25,6 +25,7 @@ void handle_bb_exec(void* tag) {
   tb = dr_get_tls_field(drcontext);
   if(tb_available(tb) < sizeof(void*)) {
     tb_flush(tb);
+    tb_tlv(tb, TYPE_TRACE);
   }
   *(void**)tb->current = tag;
   tb->current += sizeof(void*);
@@ -148,6 +149,7 @@ void handle_thread_exit(void* drcontext) {
   if(!dr_unmap_file(tb, TRACE_BUFFER_SIZE)) {
       dr_fprintf(STDERR, "warning: dr_unmap_file() failed\n");
   }
+  dr_set_tls_field(drcontext, NULL);
 }
 
 void dr_exit() {
@@ -162,7 +164,8 @@ void dr_exit() {
 }
 
 DR_EXPORT void dr_init(client_id_t id) {
-  trace_file = dr_open_file(TRACE_FILE_NAME, DR_FILE_WRITE_OVERWRITE);
+  trace_file = dr_open_file(TRACE_FILE_NAME,
+                            DR_FILE_ALLOW_LARGE | DR_FILE_WRITE_OVERWRITE);
   if(trace_file == INVALID_FILE) {
     dr_fprintf(STDERR, "fatal: dr_open_file() failed\n");
     dr_exit_process(1);

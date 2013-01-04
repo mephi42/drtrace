@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 2.8)
 find_package(DynamoRIO)
 
-add_definitions(-g3 -O3 -Wall -Wextra -Werror -Wno-unused-parameter)
+set(DRTRACE_C_FLAGS "-g3 -O3 -Wall -Wextra -Werror -Wno-unused-parameter")
+set(DRTRACE_CXX_FLAGS "${DRTRACE_C_FLAGS} -std=c++0x")
+
+set(CMAKE_C_FLAGS "${DRTRACE_C_FLAGS}")
 add_library(drtrace SHARED drtrace.c thread_buffer.c)
 configure_DynamoRIO_client(drtrace)
 target_link_libraries(drtrace -Wl,-no-undefined)
+
+set(CMAKE_CXX_FLAGS "${DRTRACE_CXX_FLAGS}")
+add_executable(drtrace_view drtrace_view.cpp)
