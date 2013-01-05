@@ -62,6 +62,17 @@ void dump_code(struct bb_t* bb) {
   dump(bb->code, code_size(bb));
 }
 
+size_t trace_count(struct trace_t* trace) {
+  struct tlv_t* tlv = container_of(trace, struct tlv_t, value);
+  size_t bytes = tlv->length - ((char*)trace->bb_id - (char*)tlv);
+  return bytes / sizeof(trace->bb_id[0]);
+}
+
+struct bb_entry_t {
+  struct bb_t* bb;
+  size_t counter;
+};
+
 int main() {
   fd_t fd(open(TRACE_FILE, O_RDONLY | O_LARGEFILE));
   if(fd == -1) {
@@ -87,7 +98,8 @@ int main() {
   struct tlv_t* previous_tlv = NULL;
   void* last = (char*)p + size;
   size_t tlv_count = 0;
-  std::unordered_map<uintptr_t, struct bb_t*> bbs;
+  std::unordered_map<uintptr_t, bb_entry_t> bbs;
+  size_t bbs_executed = 0;
   for(struct tlv_t* tlv = (tlv_t*)p;
       tlv < last;
       previous_tlv = tlv,
@@ -95,12 +107,47 @@ int main() {
       tlv_count++) {
     switch(tlv->type) {
     case TYPE_BB: {
-      bb_t* bb = (bb_t*)tlv->value;
-      bbs[bb->id] = bb;
+      bb_entry_t entry;
+      entry.bb = (bb_t*)tlv->value;
+      auto it = bbs.find(entry.bb->id);
+      if(it == bbs.end()) {
+        entry.counter = 1;
+        bbs[entry.bb->id] = entry;
+      } else {
+        it->second.bb = entry.bb;
+        it->second.counter++;
+      }
       break;
     }
-    case TYPE_TRACE:
+    case TYPE_BB_DEL: {
+      struct bb_del_t* bb_del = (struct bb_del_t*)tlv->value;
+      auto it = bbs.find(bb_del->bb_id);
+      if(it == bbs.end()) {
+        fprintf(stderr,
+                "warning: non-existent basic block %p deleted\n",
+                (void*)bb_del->bb_id);
+      } else {
+        it->second.counter--;
+        if(it->second.counter == 0) {
+          bbs.erase(it);
+        }
+      }
       break;
+    }
+    case TYPE_TRACE: {
+      struct trace_t* trace = (struct trace_t*)tlv->value;
+      size_t count = trace_count(trace);
+      for(size_t i = 0; i < count; i++) {
+        auto it = bbs.find(trace->bb_id[i]);
+        if(it == bbs.end()) {
+          fprintf(stderr,
+                  "warning: non-existent basic block %p executed\n",
+                  (void*)trace->bb_id[i]);
+        }
+        bbs_executed++;
+      }
+      break;
+    }
     default:
       fprintf(stderr,
               "fatal: unexpected TLV type at offset 0x%tx: 0x%zx\n",
@@ -118,6 +165,7 @@ int main() {
   }
   fprintf(stderr, "info: tlv count = %zu\n", tlv_count);
   fprintf(stderr, "info: bb count = %zu\n", bbs.size());
+  fprintf(stderr, "info: bbs executed = %zu\n", bbs_executed);
 
   return 0;
 }

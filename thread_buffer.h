@@ -47,5 +47,8 @@ void tb_tlv(struct thread_buffer_t* tb, uint32_t type);
 /** Cancels current TLV. */
 void tb_tlv_cancel(struct thread_buffer_t* tb);
 
+/** Checks if current TLV has given type. */
+bool tb_tlv_is(struct thread_buffer_t* tb, uint32_t type);
+
 /** Completes current TLV. */
 void tb_tlv_complete(struct thread_buffer_t* tb);

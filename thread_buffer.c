@@ -65,6 +65,14 @@ void tb_tlv_cancel(struct thread_buffer_t* tb) {
   tb->current_tlv = NULL;
 }
 
+bool tb_tlv_is(struct thread_buffer_t* tb, uint32_t type) {
+  if(tb->current_tlv) {
+    return tb->current_tlv->type == type;
+  } else {
+    return false;
+  }
+}
+
 void tb_tlv_complete(struct thread_buffer_t* tb) {
   if(tb->current_tlv) {
     tb->current_tlv->length = tb->current - (void*)tb->current_tlv;

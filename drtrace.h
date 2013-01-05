@@ -15,6 +15,13 @@ struct bb_t {
   uint8_t code[];
 };
 
+/** Basic block deletion information. */
+#define TYPE_BB_DEL 0x44444444
+struct bb_del_t {
+  /** Identifier of deleted basic block. */
+  uintptr_t bb_id;
+};
+
 /** Instruction execution information. */
 #define TYPE_TRACE 0x30303030
 struct trace_t {
