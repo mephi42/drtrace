@@ -73,7 +73,23 @@ struct bb_entry_t {
   size_t counter;
 };
 
-int main() {
+int main(int argc, char** argv) {
+  uintptr_t track_bb = 0;
+  for(int i = 1; i < argc; i++) {
+    char* arg = argv[i];
+    if(strcmp(arg, "--track-bb") == 0) {
+      i++;
+      if(i >= argc) {
+        fprintf(stderr, "fatal: missing --track-bb value\n");
+        return 1;
+      }
+      void* value = NULL;
+      sscanf(argv[i], "%p", &value);
+      fprintf(stderr, "info: tracking bb %p\n", value);
+      track_bb = (uintptr_t)value;
+    }
+  }
+
   fd_t fd(open(TRACE_FILE, O_RDONLY | O_LARGEFILE));
   if(fd == -1) {
     perror("fatal: open() failed");
@@ -113,9 +129,24 @@ int main() {
       if(it == bbs.end()) {
         entry.counter = 1;
         bbs[entry.bb->id] = entry;
+        if(entry.bb->id == track_bb) {
+          fprintf(stderr,
+                  "info: basic block %p created, "
+                  "TLV offset is 0x%tx, counter is 1\n",
+                  (void*)entry.bb->id,
+                  (char*)tlv - (char*)p);
+        }
       } else {
         it->second.bb = entry.bb;
         it->second.counter++;
+        if(entry.bb->id == track_bb) {
+          fprintf(stderr,
+                  "info: basic block %p created, "
+                  "TLV offset is 0x%tx, counter is %zu\n",
+                  (void*)entry.bb->id,
+                  (char*)tlv - (char*)p,
+                  it->second.counter);
+        }
       }
       break;
     }
@@ -124,10 +155,20 @@ int main() {
       auto it = bbs.find(bb_del->bb_id);
       if(it == bbs.end()) {
         fprintf(stderr,
-                "warning: non-existent basic block %p deleted\n",
-                (void*)bb_del->bb_id);
+                "warning: non-existent basic block %p deleted, "
+                "TLV offset is 0x%tx\n",
+                (void*)bb_del->bb_id,
+                (char*)tlv - (char*)p);
       } else {
         it->second.counter--;
+        if(bb_del->bb_id == track_bb) {
+          fprintf(stderr,
+                  "info: basic block %p deleted, "
+                  "TLV offset is 0x%tx, counter is %zu\n",
+                  (void*)bb_del->bb_id,
+                  (char*)tlv - (char*)p,
+                  it->second.counter);
+        }
         if(it->second.counter == 0) {
           bbs.erase(it);
         }

@@ -120,6 +120,10 @@ void handle_delete(void* drcontext, void* tag) {
   struct bb_del_t* bb_del;
   bool flushed;
 
+  if(!dr_bb_exists_at(drcontext, tag)) {
+    return;
+  }
+
   if(drcontext == NULL) {
     dr_mutex_lock(trace_buffer_lock);
     tb = trace_buffer;
