@@ -2,12 +2,15 @@
 #define TRACE_FILE "./trace.out"
 
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <unordered_map>
 
 #include "drtrace.h"
 
@@ -33,11 +36,31 @@ public:
       perror("warning: munmap() failed");
     }
   }
-  operator void*() { return value_; }
 
   template<typename T>
   operator T*() { return (T*)value_; }
 };
+
+void dump(void* p, size_t size) {
+  if(size == 0) { return; }
+  fprintf(stderr, "%.2x", ((unsigned char*)p)[0]);
+  for(size_t i = 1; i < size; i++) {
+    fprintf(stderr, " %.2x", ((unsigned char*)p)[i]);
+  }
+  fprintf(stderr, "\n");
+}
+
+#define container_of(ptr, type, member) \
+    ((type*)((char*)(ptr) - offsetof(type, member)))
+
+size_t code_size(struct bb_t* bb) {
+  struct tlv_t* tlv = container_of(bb, struct tlv_t, value);
+  return tlv->length - ((char*)bb->code - (char*)tlv);
+}
+
+void dump_code(struct bb_t* bb) {
+  dump(bb->code, code_size(bb));
+}
 
 int main() {
   fd_t fd(open(TRACE_FILE, O_RDONLY | O_LARGEFILE));
@@ -64,14 +87,18 @@ int main() {
   struct tlv_t* previous_tlv = NULL;
   void* last = (char*)p + size;
   size_t tlv_count = 0;
+  std::unordered_map<uintptr_t, struct bb_t*> bbs;
   for(struct tlv_t* tlv = (tlv_t*)p;
       tlv < last;
       previous_tlv = tlv,
       tlv = (struct tlv_t*)((char*)tlv + tlv->length),
       tlv_count++) {
     switch(tlv->type) {
-    case TYPE_BB:
+    case TYPE_BB: {
+      bb_t* bb = (bb_t*)tlv->value;
+      bbs[bb->id] = bb;
       break;
+    }
     case TYPE_TRACE:
       break;
     default:
@@ -81,7 +108,7 @@ int main() {
               (size_t)tlv->type);
       if(previous_tlv) {
         fprintf(stderr,
-                "info: previous TLV is at offset 0x%zx\n",
+                "info: previous TLV is at offset 0x%tx\n",
                 (char*)previous_tlv - (char*)p);
       } else {
         fprintf(stderr, "info: there is no previous TLV\n");
@@ -90,6 +117,7 @@ int main() {
     }
   }
   fprintf(stderr, "info: tlv count = %zu\n", tlv_count);
+  fprintf(stderr, "info: bb count = %zu\n", bbs.size());
 
   return 0;
 }
