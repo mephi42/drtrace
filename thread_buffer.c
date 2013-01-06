@@ -10,6 +10,7 @@ void* tb_end(struct thread_buffer_t* tb) {
 
 void tb_flush(struct thread_buffer_t* tb) {
   size_t size;
+  int64 pos;
   size_t written;
 
   tb_tlv_complete(tb);
@@ -21,12 +22,18 @@ void tb_flush(struct thread_buffer_t* tb) {
   }
 
   // Write data.
+  dr_mutex_lock(tb->mutex);
+  pos = dr_file_tell(tb->file);
+  if(pos == -1) {
+    dr_fprintf(STDERR, "fatal: dr_file_tell() failed\n");
+    dr_exit_process(1);
+  }
   dr_fprintf(STDERR,
-             "info: flushing tb %p for thread 0x%x with size %u\n",
+             "info: flushing tb %p thread=0x%x size=%u offset=%p\n",
              tb,
              (unsigned int)tb->thread_id,
-             (unsigned int)size);
-  dr_mutex_lock(tb->mutex);
+             (unsigned int)size,
+             (void*)pos);
   written = dr_write_file(tb->file, tb + 1, size);
   dr_mutex_unlock(tb->mutex);
   if(written != size) {

@@ -236,7 +236,7 @@ void dr_exit() {
 }
 
 DR_EXPORT void dr_init(client_id_t id) {
-  dr_fprintf(STDERR, "info: starting dtrace..\n");
+  dr_fprintf(STDERR, "info: starting dtrace, &dr_init=%p..\n", &dr_init);
 
   trace_file = dr_open_file(TRACE_FILE_NAME,
                             DR_FILE_ALLOW_LARGE | DR_FILE_WRITE_OVERWRITE);
