@@ -5,7 +5,7 @@ set(DRTRACE_C_FLAGS "-g3 -O3 -Wall -Wextra -Werror -Wno-unused-parameter")
 set(DRTRACE_CXX_FLAGS "${DRTRACE_C_FLAGS} -std=c++0x")
 
 set(CMAKE_C_FLAGS "${DRTRACE_C_FLAGS}")
-add_library(drtrace SHARED drtrace.c thread_buffer.c)
+add_library(drtrace SHARED drtrace.c trace_buffer.c)
 configure_DynamoRIO_client(drtrace)
 target_link_libraries(drtrace -Wl,-no-undefined)
 

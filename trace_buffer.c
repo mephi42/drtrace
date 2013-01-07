@@ -1,14 +1,14 @@
-#include "thread_buffer.h"
+#include "trace_buffer.h"
 
-size_t tb_available(struct thread_buffer_t* tb) {
+size_t tb_available(struct trace_buffer_t* tb) {
   return tb_end(tb) - tb->current;
 }
 
-void* tb_end(struct thread_buffer_t* tb) {
+void* tb_end(struct trace_buffer_t* tb) {
   return ((void*)tb) + tb->size;
 }
 
-void tb_flush(struct thread_buffer_t* tb) {
+void tb_flush(struct trace_buffer_t* tb) {
   size_t size;
   int64 pos;
   size_t written;
@@ -45,7 +45,7 @@ void tb_flush(struct thread_buffer_t* tb) {
   tb->current = tb + 1;
 }
 
-void tb_init(struct thread_buffer_t* tb,
+void tb_init(struct trace_buffer_t* tb,
              size_t size,
              file_t file,
              void* mutex,
@@ -58,7 +58,7 @@ void tb_init(struct thread_buffer_t* tb,
   tb->current = tb + 1;
 }
 
-void tb_tlv(struct thread_buffer_t* tb, uint32_t type) {
+void tb_tlv(struct trace_buffer_t* tb, uint32_t type) {
   if(tb_available(tb) < sizeof(struct tlv_t)) {
     tb_flush(tb);
   }
@@ -67,12 +67,12 @@ void tb_tlv(struct thread_buffer_t* tb, uint32_t type) {
   tb->current = tb->current_tlv + 1;
 }
 
-void tb_tlv_cancel(struct thread_buffer_t* tb) {
+void tb_tlv_cancel(struct trace_buffer_t* tb) {
   tb->current = tb->current_tlv;
   tb->current_tlv = NULL;
 }
 
-bool tb_tlv_is(struct thread_buffer_t* tb, uint32_t type) {
+bool tb_tlv_is(struct trace_buffer_t* tb, uint32_t type) {
   if(tb->current_tlv) {
     return tb->current_tlv->type == type;
   } else {
@@ -80,7 +80,7 @@ bool tb_tlv_is(struct thread_buffer_t* tb, uint32_t type) {
   }
 }
 
-void tb_tlv_complete(struct thread_buffer_t* tb) {
+void tb_tlv_complete(struct trace_buffer_t* tb) {
   if(tb->current_tlv) {
     tb->current_tlv->length = tb->current - (void*)tb->current_tlv;
     if(tb->current_tlv->type == TYPE_TRACE &&

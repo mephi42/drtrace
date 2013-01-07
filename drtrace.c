@@ -4,7 +4,7 @@
 #include <dr_tools.h>
 
 #include "drtrace.h"
-#include "thread_buffer.h"
+#include "trace_buffer.h"
 
 //#define TRACE_DEBUG
 #define TRACE_BUFFER_SIZE (16 * PAGE_SIZE)
@@ -18,7 +18,7 @@ file_t trace_file;
 void* trace_file_lock;
 
 /** Global trace buffer. */
-struct thread_buffer_t* trace_buffer;
+struct trace_buffer_t* trace_buffer;
 
 /** Synchronizes access to global trace buffer. */
 void* trace_buffer_lock;
@@ -32,7 +32,7 @@ void check_drcontext(void* drcontext, const char* s) {
 
 void handle_bb_exec(void* tag) {
   void* drcontext;
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
 
   drcontext = dr_get_current_drcontext();
   check_drcontext(drcontext, "handle_bb_exec");
@@ -48,7 +48,7 @@ void handle_bb_exec(void* tag) {
 dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                           bool for_trace, bool translating) {
   instr_t* first;
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
   app_pc pc;
   bool flushed;
   struct bb_t* bb_data;
@@ -116,7 +116,7 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
 }
 
 void handle_delete(void* drcontext, void* tag) {
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
   struct bb_del_t* bb_del;
   bool flushed;
 
@@ -154,9 +154,9 @@ void handle_delete(void* drcontext, void* tag) {
   }
 }
 
-struct thread_buffer_t* tb_create(thread_id_t thread_id) {
+struct trace_buffer_t* tb_create(thread_id_t thread_id) {
   size_t size;
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
 
   size = MMAP_SIZE;
   // XXX: will -1 work on Windows?
@@ -184,7 +184,7 @@ struct thread_buffer_t* tb_create(thread_id_t thread_id) {
   return tb;
 }
 
-void tb_delete(struct thread_buffer_t* tb) {
+void tb_delete(struct trace_buffer_t* tb) {
   tb_flush(tb);
   if(!dr_unmap_file(tb, TRACE_BUFFER_SIZE)) {
       dr_fprintf(STDERR, "warning: dr_unmap_file() failed\n");
@@ -193,7 +193,7 @@ void tb_delete(struct thread_buffer_t* tb) {
 
 void handle_thread_init(void* drcontext) {
   thread_id_t thread_id;
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
 
   check_drcontext(drcontext, "handle_thread_init");
   thread_id = dr_get_thread_id(drcontext);
@@ -206,7 +206,7 @@ void handle_thread_init(void* drcontext) {
 }
 
 void handle_thread_exit(void* drcontext) {
-  struct thread_buffer_t* tb;
+  struct trace_buffer_t* tb;
 
   check_drcontext(drcontext, "handle_thread_exit");
   tb = dr_get_tls_field(drcontext);

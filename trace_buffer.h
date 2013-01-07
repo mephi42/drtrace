@@ -4,8 +4,8 @@
 
 #include "drtrace.h"
 
-/** Header of per-thread buffer. Immediately followed by raw data. */
-struct thread_buffer_t {
+/** Header of trace buffer. Immediately followed by raw data. */
+struct trace_buffer_t {
   /** Size including this header. */
   size_t size;
 
@@ -15,7 +15,7 @@ struct thread_buffer_t {
   /** Backing file lock. */
   void* mutex;
 
-  /** Associated thread identifier. */
+  /** Associated thread identifier or 0. */
   thread_id_t thread_id;
 
   /** TLV currently being written. */
@@ -26,29 +26,29 @@ struct thread_buffer_t {
 };
 
 /** Number of available bytes. */
-size_t tb_available(struct thread_buffer_t* tb);
+size_t tb_available(struct trace_buffer_t* tb);
 
 /** Address of byte after last. */
-void* tb_end(struct thread_buffer_t* tb);
+void* tb_end(struct trace_buffer_t* tb);
 
 /** Moves data from trace buffer to trace file. */
-void tb_flush(struct thread_buffer_t* tb);
+void tb_flush(struct trace_buffer_t* tb);
 
 /** Initializes trace buffer. */
-void tb_init(struct thread_buffer_t* tb,
+void tb_init(struct trace_buffer_t* tb,
              size_t size,
              file_t file,
              void* mutex,
              thread_id_t thread_id);
 
 /** Begins a new TLV. */
-void tb_tlv(struct thread_buffer_t* tb, uint32_t type);
+void tb_tlv(struct trace_buffer_t* tb, uint32_t type);
 
 /** Cancels current TLV. */
-void tb_tlv_cancel(struct thread_buffer_t* tb);
+void tb_tlv_cancel(struct trace_buffer_t* tb);
 
 /** Checks if current TLV has given type. */
-bool tb_tlv_is(struct thread_buffer_t* tb, uint32_t type);
+bool tb_tlv_is(struct trace_buffer_t* tb, uint32_t type);
 
 /** Completes current TLV. */
-void tb_tlv_complete(struct thread_buffer_t* tb);
+void tb_tlv_complete(struct trace_buffer_t* tb);
