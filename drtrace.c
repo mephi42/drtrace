@@ -2,6 +2,7 @@
 #include <dr_events.h>
 #include <dr_ir_utils.h>
 #include <dr_tools.h>
+#include <hashtable.h>
 
 #include "drtrace.h"
 #include "trace_buffer.h"
@@ -23,6 +24,36 @@ struct trace_buffer_t* trace_buffer;
 /** Synchronizes access to global trace buffer. */
 void* trace_buffer_lock;
 
+/** Information associated with fragment tags. */
+struct tag_info_t {
+  /** Unique identifier (tags are not unique). */
+  bb_id_t id;
+
+  /** Number of deletion calls to expect. */
+  uint32_t counter;
+};
+
+/** Mapping from tags to tag_info_t structures. */
+hashtable_t tags;
+
+/** Basic block identifier. */
+bb_id_t next_id = 0;
+
+/** Synchronizes access to tags and next_id. */
+void* tags_lock;
+
+struct tag_info_t* tag_info_alloc() {
+  return dr_global_alloc(sizeof(struct tag_info_t));
+}
+
+void tag_info_free(struct tag_info_t* tag_info) {
+  dr_global_free(tag_info, sizeof(struct tag_info_t));
+}
+
+void tag_info_free_raw(void* tag_info) {
+  tag_info_free((struct tag_info_t*)tag_info);
+}
+
 void check_drcontext(void* drcontext, const char* s) {
   if(drcontext == NULL) {
     dr_fprintf(STDERR, "fatal: current drcontext is NULL in %s\n", s);
@@ -30,7 +61,32 @@ void check_drcontext(void* drcontext, const char* s) {
   }
 }
 
-void handle_bb_exec(void* tag) {
+void save_deletion_event(struct trace_buffer_t* tb, bb_id_t id) {
+  struct bb_del_t* bb_del;
+  bool flushed;
+
+  tb_tlv_complete(tb);
+  for(flushed = false; ; tb_flush(tb), flushed = true) {
+    tb_tlv(tb, TYPE_BB_DEL);
+    if(tb_available(tb) < sizeof(struct bb_del_t)) {
+      if(flushed) {
+        dr_fprintf(STDERR, "fatal: not enough buffer space after flush\n");
+        dr_exit_process(1);
+      }
+      tb_tlv_cancel(tb);
+      continue;
+    } else {
+      bb_del = tb->current;
+      bb_del->bb_id = id;
+      tb->current = bb_del + 1;
+      tb_tlv_complete(tb);
+      tb_tlv(tb, TYPE_TRACE);
+      break;
+    }
+  }
+}
+
+void handle_bb_exec(bb_id_t id) {
   void* drcontext;
   struct trace_buffer_t* tb;
 
@@ -41,18 +97,30 @@ void handle_bb_exec(void* tag) {
     tb_flush(tb);
     tb_tlv(tb, TYPE_TRACE);
   }
-  *(void**)tb->current = tag;
-  tb->current += sizeof(void*);
+  *(bb_id_t*)tb->current = id;
+  tb->current += sizeof(bb_id_t);
 }
 
 dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                           bool for_trace, bool translating) {
   instr_t* first;
   struct trace_buffer_t* tb;
+  bool report_creation;
+  bb_id_t report_deletion;
+  bb_id_t id;
+  struct tag_info_t* tag_info;
   app_pc pc;
   bool flushed;
   struct bb_t* bb_data;
   void* current;
+
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR,
+             "debug: handle_bb(tag=%p, for_trace=%u, translating=%u)\n",
+             tag,
+             for_trace,
+             translating);
+#endif
 
   check_drcontext(drcontext, "handle_bb");
 
@@ -60,11 +128,49 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
   pc = instr_get_app_pc(first);
   tb = dr_get_tls_field(drcontext);
 
+  report_deletion = 0;
+  report_creation = !translating;
+  dr_mutex_lock(tags_lock);
+  tag_info = hashtable_lookup(&tags, tag);
+  if(tag_info == NULL) {
+    // This is the first time we see this tag.
+    tag_info = tag_info_alloc();
+    id = next_id++;
+    tag_info->id = id;
+    tag_info->counter = 1;
+    hashtable_add(&tags, tag, tag_info);
+  } else {
+    // This tag was already seen.
+    if(for_trace) {
+      // Use the same identifier for trace instrumentation.
+      report_creation = false;
+      id = tag_info->id;
+      tag_info->counter++;
+    } else {
+      // This is tag reuse. Generate a new identifier and delete an old one.
+      report_deletion = tag_info->id;
+      id = next_id++;
+      tag_info->id = id;
+      tag_info->counter++;
+    }
+  }
+  dr_mutex_unlock(tags_lock);
+
 #ifdef TRACE_DEBUG
-  dr_fprintf(STDERR, "debug: bb=%p pc=%p tb=%p..\n", tag, pc, tb);
+  dr_fprintf(STDERR,
+             "debug: id=" BB_ID_FMT
+             ", report_deletion=" BB_ID_FMT
+             ", report_creation=%u\n",
+             id,
+             report_deletion,
+             report_creation);
 #endif
 
-  if(!translating) {
+  if(report_deletion) {
+    save_deletion_event(tb, report_deletion);
+  }
+
+  if(report_creation) {
     tb_tlv_complete(tb);
     for(flushed = false; ; tb_flush(tb), flushed = true) {
       tb_tlv(tb, TYPE_BB);
@@ -75,6 +181,7 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                  &bb_data->code[0],
                  tb_end(tb));
 #endif
+      // XXX: copy right from application memory
       current = instrlist_encode_to_copy(drcontext,
                                          bb,
                                          &bb_data->code[0],
@@ -82,7 +189,7 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                                          tb_end(tb),
                                          true);
       if(current) {
-        bb_data->id = (uint64_t)tag;
+        bb_data->id = id;
         bb_data->pc = (uint64_t)pc;
         tb->current = current;
         tb_tlv_complete(tb);
@@ -107,7 +214,7 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                        &handle_bb_exec,
                        false,
                        1,
-                       OPND_CREATE_INTPTR(tag));
+                       OPND_CREATE_INT32(id));
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR, "debug: done\n");
 #endif
@@ -116,13 +223,29 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
 }
 
 void handle_delete(void* drcontext, void* tag) {
+  struct tag_info_t* tag_info;
+  bb_id_t id;
   struct trace_buffer_t* tb;
-  struct bb_del_t* bb_del;
-  bool flushed;
 
-  if(!dr_bb_exists_at(drcontext, tag)) {
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: handle_delete(tag=%p)\n", tag);
+#endif
+
+  dr_mutex_lock(tags_lock);
+  tag_info = hashtable_lookup(&tags, tag);
+  if(tag_info == NULL) {
+    // Ignore -- this must be trace tag.
+    dr_mutex_unlock(tags_lock);
     return;
   }
+  if(--tag_info->counter != 0) {
+    // Ignore -- this deletion was already reported.
+    dr_mutex_unlock(tags_lock);
+    return;
+  }
+  id = tag_info->id;
+  hashtable_remove(&tags, tag);
+  dr_mutex_unlock(tags_lock);
 
   if(drcontext == NULL) {
     dr_mutex_lock(trace_buffer_lock);
@@ -130,25 +253,7 @@ void handle_delete(void* drcontext, void* tag) {
   } else {
     tb = dr_get_tls_field(drcontext);
   }
-  tb_tlv_complete(tb);
-  for(flushed = false; ; tb_flush(tb), flushed = true) {
-    tb_tlv(tb, TYPE_BB_DEL);
-    if(tb_available(tb) < sizeof(struct bb_del_t)) {
-      if(flushed) {
-        dr_fprintf(STDERR, "fatal: not enough buffer space after flush\n");
-        dr_exit_process(1);
-      }
-      tb_tlv_cancel(tb);
-      continue;
-    } else {
-      bb_del = tb->current;
-      bb_del->bb_id = (uintptr_t)tag;
-      tb->current = bb_del + 1;
-      tb_tlv_complete(tb);
-      tb_tlv(tb, TYPE_TRACE);
-      break;
-    }
-  }
+  save_deletion_event(tb, id);
   if(tb == trace_buffer) {
     dr_mutex_unlock(trace_buffer_lock);
   }
@@ -228,6 +333,9 @@ void dr_exit() {
   dr_close_file(trace_file);
   dr_mutex_destroy(trace_file_lock);
 
+  hashtable_delete(&tags);
+  dr_mutex_destroy(tags_lock);
+
   dr_unregister_exit_event(&dr_exit);
   dr_unregister_thread_init_event(&handle_thread_init);
   dr_unregister_thread_exit_event(&handle_thread_exit);
@@ -248,6 +356,16 @@ DR_EXPORT void dr_init(client_id_t id) {
 
   trace_buffer = tb_create(-1);
   trace_buffer_lock = dr_mutex_create();
+
+  hashtable_init_ex(&tags,
+                    16,
+                    HASH_INTPTR,
+                    false,
+                    false,
+                    &tag_info_free_raw,
+                    NULL,
+                    NULL);
+  tags_lock = dr_mutex_create();
 
   dr_register_exit_event(&dr_exit);
   dr_register_thread_init_event(&handle_thread_init);

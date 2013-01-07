@@ -70,11 +70,10 @@ size_t trace_count(struct trace_t* trace) {
 
 struct bb_entry_t {
   struct bb_t* bb;
-  size_t counter;
 };
 
 int main(int argc, char** argv) {
-  uintptr_t track_bb = 0;
+  bb_id_t track_bb = -1;
   for(int i = 1; i < argc; i++) {
     char* arg = argv[i];
     if(strcmp(arg, "--track-bb") == 0) {
@@ -83,10 +82,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "fatal: missing --track-bb value\n");
         return 1;
       }
-      void* value = NULL;
-      sscanf(argv[i], "%p", &value);
-      fprintf(stderr, "info: tracking bb %p\n", value);
-      track_bb = (uintptr_t)value;
+      sscanf(argv[i], BB_ID_FMT, &track_bb);
+      fprintf(stderr, "info: tracking bb " BB_ID_FMT "\n", track_bb);
     }
   }
 
@@ -114,7 +111,7 @@ int main(int argc, char** argv) {
   struct tlv_t* previous_tlv = NULL;
   void* last = (char*)p + size;
   size_t tlv_count = 0;
-  std::unordered_map<uintptr_t, bb_entry_t> bbs;
+  std::unordered_map<bb_id_t, bb_entry_t> bbs;
   size_t bbs_executed = 0;
   for(struct tlv_t* tlv = (tlv_t*)p;
       tlv < last;
@@ -127,26 +124,18 @@ int main(int argc, char** argv) {
       entry.bb = (bb_t*)tlv->value;
       auto it = bbs.find(entry.bb->id);
       if(it == bbs.end()) {
-        entry.counter = 1;
         bbs[entry.bb->id] = entry;
         if(entry.bb->id == track_bb) {
           fprintf(stderr,
-                  "info: basic block %p created, "
-                  "TLV offset is 0x%tx, counter is 1\n",
-                  (void*)entry.bb->id,
+                  "info: basic block " BB_ID_FMT " created, "
+                  "TLV offset is 0x%tx\n",
+                  entry.bb->id,
                   (char*)tlv - (char*)p);
         }
       } else {
-        it->second.bb = entry.bb;
-        it->second.counter++;
-        if(entry.bb->id == track_bb) {
-          fprintf(stderr,
-                  "info: basic block %p created, "
-                  "TLV offset is 0x%tx, counter is %zu\n",
-                  (void*)entry.bb->id,
-                  (char*)tlv - (char*)p,
-                  it->second.counter);
-        }
+        fprintf(stderr,
+                "warning: duplicate basic block " BB_ID_FMT " created\n",
+                entry.bb->id);
       }
       break;
     }
@@ -155,23 +144,19 @@ int main(int argc, char** argv) {
       auto it = bbs.find(bb_del->bb_id);
       if(it == bbs.end()) {
         fprintf(stderr,
-                "warning: non-existent basic block %p deleted, "
+                "warning: non-existent basic block " BB_ID_FMT " deleted, "
                 "TLV offset is 0x%tx\n",
-                (void*)bb_del->bb_id,
+                bb_del->bb_id,
                 (char*)tlv - (char*)p);
       } else {
-        it->second.counter--;
         if(bb_del->bb_id == track_bb) {
           fprintf(stderr,
-                  "info: basic block %p deleted, "
-                  "TLV offset is 0x%tx, counter is %zu\n",
-                  (void*)bb_del->bb_id,
-                  (char*)tlv - (char*)p,
-                  it->second.counter);
+                  "info: basic block " BB_ID_FMT " deleted, "
+                  "TLV offset is 0x%tx\n",
+                  bb_del->bb_id,
+                  (char*)tlv - (char*)p);
         }
-        if(it->second.counter == 0) {
-          bbs.erase(it);
-        }
+        bbs.erase(it);
       }
       break;
     }
@@ -182,8 +167,10 @@ int main(int argc, char** argv) {
         auto it = bbs.find(trace->bb_id[i]);
         if(it == bbs.end()) {
           fprintf(stderr,
-                  "warning: non-existent basic block %p executed\n",
-                  (void*)trace->bb_id[i]);
+                  "warning: non-existent basic block " BB_ID_FMT " executed, "
+                  "TLV offset is 0x%tx\n",
+                  trace->bb_id[i],
+                  (char*)tlv - (char*)p);
         }
         bbs_executed++;
       }

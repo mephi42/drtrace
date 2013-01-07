@@ -2,11 +2,15 @@
 
 #include <stdint.h>
 
+/** Basic block identifier. */
+typedef uint32_t bb_id_t;
+#define BB_ID_FMT "0x%x"
+
 /** Basic block translation information. */
 #define TYPE_BB 0x42424242
 struct bb_t {
   /** Identifier. */
-  uintptr_t id;
+  bb_id_t id;
 
   /** Address of first instruction. */
   uintptr_t pc;
@@ -19,7 +23,7 @@ struct bb_t {
 #define TYPE_BB_DEL 0x44444444
 struct bb_del_t {
   /** Identifier of deleted basic block. */
-  uintptr_t bb_id;
+  bb_id_t bb_id;
 };
 
 /** Instruction execution information. */
@@ -29,7 +33,7 @@ struct trace_t {
   uint32_t thread_id;
 
   /** Basic block identifiers. */
-  uintptr_t bb_id[];
+  bb_id_t bb_id[];
 };
 
 /** Type, length and value. */

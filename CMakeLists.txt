@@ -7,6 +7,7 @@ set(DRTRACE_CXX_FLAGS "${DRTRACE_C_FLAGS} -std=c++0x")
 set(CMAKE_C_FLAGS "${DRTRACE_C_FLAGS}")
 add_library(drtrace SHARED drtrace.c trace_buffer.c)
 configure_DynamoRIO_client(drtrace)
+use_DynamoRIO_extension(drtrace drcontainers)
 target_link_libraries(drtrace -Wl,-no-undefined)
 
 set(CMAKE_CXX_FLAGS "${DRTRACE_CXX_FLAGS}")
