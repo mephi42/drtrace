@@ -101,6 +101,52 @@ void handle_bb_exec(bb_id_t id) {
   tb->current += sizeof(bb_id_t);
 }
 
+void record_bb(void* drcontext,
+               instrlist_t* bb,
+               bb_id_t id) {
+  struct trace_buffer_t* tb;
+  app_pc pc;
+  bool flushed;
+  struct bb_t* bb_data;
+  void* current;
+
+  tb = dr_get_tls_field(drcontext);
+  pc = instr_get_app_pc(instrlist_first(bb));
+
+  tb_tlv_complete(tb);
+  for(flushed = false; ; tb_flush(tb), flushed = true) {
+    tb_tlv(tb, TYPE_BB);
+    bb_data = tb->current;
+#ifdef TRACE_DEBUG
+    dr_fprintf(STDERR,
+               "debug: instrlist_encode_to_copy(%p-%p)..\n",
+               &bb_data->code[0],
+               tb_end(tb));
+#endif
+    // XXX: copy right from application memory
+    current = instrlist_encode_to_copy(drcontext,
+                                       bb,
+                                       &bb_data->code[0],
+                                       pc,
+                                       tb_end(tb),
+                                       true);
+    if(current) {
+      bb_data->id = id;
+      bb_data->pc = (uint64_t)pc;
+      tb->current = current;
+      tb_tlv_complete(tb);
+      tb_tlv(tb, TYPE_TRACE);
+      break;
+    } else {
+      if(flushed) {
+        dr_fprintf(STDERR, "fatal: not enough buffer space after flush\n");
+        dr_exit_process(1);
+      }
+      tb_tlv_cancel(tb);
+    }
+  }
+}
+
 dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
                           bool for_trace, bool translating) {
   instr_t* first;
@@ -109,10 +155,6 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
   bb_id_t report_deletion;
   bb_id_t id;
   struct tag_info_t* tag_info;
-  app_pc pc;
-  bool flushed;
-  struct bb_t* bb_data;
-  void* current;
 
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
@@ -125,7 +167,6 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
   check_drcontext(drcontext, "handle_bb");
 
   first = instrlist_first(bb);
-  pc = instr_get_app_pc(first);
   tb = dr_get_tls_field(drcontext);
 
   report_deletion = 0;
@@ -171,38 +212,7 @@ dr_emit_flags_t handle_bb(void* drcontext, void* tag, instrlist_t* bb,
   }
 
   if(report_creation) {
-    tb_tlv_complete(tb);
-    for(flushed = false; ; tb_flush(tb), flushed = true) {
-      tb_tlv(tb, TYPE_BB);
-      bb_data = tb->current;
-#ifdef TRACE_DEBUG
-      dr_fprintf(STDERR,
-                 "debug: instrlist_encode_to_copy(%p-%p)..\n",
-                 &bb_data->code[0],
-                 tb_end(tb));
-#endif
-      // XXX: copy right from application memory
-      current = instrlist_encode_to_copy(drcontext,
-                                         bb,
-                                         &bb_data->code[0],
-                                         pc,
-                                         tb_end(tb),
-                                         true);
-      if(current) {
-        bb_data->id = id;
-        bb_data->pc = (uint64_t)pc;
-        tb->current = current;
-        tb_tlv_complete(tb);
-        tb_tlv(tb, TYPE_TRACE);
-        break;
-      } else {
-        if(flushed) {
-          dr_fprintf(STDERR, "fatal: not enough buffer space after flush\n");
-          dr_exit_process(1);
-        }
-        tb_tlv_cancel(tb);
-      }
-    }
+    record_bb(drcontext, bb, id);
   }
 
 #ifdef TRACE_DEBUG
