@@ -3,6 +3,7 @@
 #include <dr_ir_utils.h>
 #include <dr_tools.h>
 #include <hashtable.h>
+#include <string.h>
 
 #include "drtrace.h"
 #include "trace_buffer.h"
@@ -101,38 +102,100 @@ void handle_bb_exec(bb_id_t id) {
   tb->current += sizeof(bb_id_t);
 }
 
+struct chunk_info_t {
+  app_pc pc;
+  size_t size;
+};
+
+struct chunk_info_t get_chunk_info(void* drcontext,
+                                   instr_t** instr,
+                                   size_t max) {
+  struct chunk_info_t chunk_info = { 0, 0 };
+
+  for(; *instr; *instr = instr_get_next(*instr)) {
+    app_pc pc;
+    size_t size;
+
+    pc = dr_app_pc_for_decoding(instr_get_app_pc(*instr));
+    if(pc != chunk_info.pc + chunk_info.size) {
+      if(chunk_info.pc == 0 && chunk_info.size == 0) {
+        chunk_info.pc = pc;
+      } else {
+        break;
+      }
+    }
+    size = chunk_info.size + instr_length(drcontext, *instr);
+    if(size > max) {
+      break;
+    }
+    chunk_info.size = size;
+  }
+  return chunk_info;
+}
+
+void* record_chunk(void* drcontext,
+                   instr_t** instr,
+                   void* current,
+                   void* end) {
+  struct code_chunk_t* chunk;
+  ssize_t max;
+  struct chunk_info_t chunk_info;
+
+  chunk = current;
+  max = end - current - sizeof(struct code_chunk_t);
+  if(max <= 0) {
+    return NULL;
+  }
+  if(max > UINT8_MAX) {
+    max = UINT8_MAX;
+  }
+  chunk_info = get_chunk_info(drcontext, instr, max);
+  if(chunk_info.size == 0) {
+    return NULL;
+  }
+  chunk->pc = (uintptr_t)chunk_info.pc;
+  chunk->size = (uint8_t)chunk_info.size;
+  memcpy(chunk->code, chunk_info.pc, chunk_info.size);
+  return &chunk->code[chunk_info.size];
+}
+
+void* record_bb_instrs(void* drcontext,
+                       instrlist_t* bb,
+                       void* current,
+                       void* end) {
+  instr_t* instr;
+
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: record_bb_instrs(%p-%p)\n", current, end);
+#endif
+
+  instr = instrlist_first(bb);
+  while(instr) {
+    current = record_chunk(drcontext, &instr, current, end);
+    if(!current) {
+      break;
+    }
+  }
+  return current;
+}
+
 void record_bb(void* drcontext,
                instrlist_t* bb,
                bb_id_t id) {
-  struct trace_buffer_t* tb;
-  app_pc pc;
   bool flushed;
-  struct bb_t* bb_data;
-  void* current;
+  struct trace_buffer_t* tb;
 
   tb = dr_get_tls_field(drcontext);
-  pc = instr_get_app_pc(instrlist_first(bb));
-
   tb_tlv_complete(tb);
   for(flushed = false; ; tb_flush(tb), flushed = true) {
+    struct bb_t* bb_data;
+    void* current;
+
     tb_tlv(tb, TYPE_BB);
     bb_data = tb->current;
-#ifdef TRACE_DEBUG
-    dr_fprintf(STDERR,
-               "debug: instrlist_encode_to_copy(%p-%p)..\n",
-               &bb_data->code[0],
-               tb_end(tb));
-#endif
-    // XXX: copy right from application memory
-    current = instrlist_encode_to_copy(drcontext,
-                                       bb,
-                                       &bb_data->code[0],
-                                       pc,
-                                       tb_end(tb),
-                                       true);
+    current = record_bb_instrs(drcontext, bb, &bb_data->chunks, tb_end(tb));
     if(current) {
       bb_data->id = id;
-      bb_data->pc = (uint64_t)pc;
       tb->current = current;
       tb_tlv_complete(tb);
       tb_tlv(tb, TYPE_TRACE);

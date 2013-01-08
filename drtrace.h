@@ -6,17 +6,26 @@
 typedef uint32_t bb_id_t;
 #define BB_ID_FMT "0x%x"
 
+/** Contiguous code chunk. */
+struct code_chunk_t {
+  /** Address. */
+  uintptr_t pc;
+
+  /** Size of raw code. */
+  uint8_t size;
+
+  /** Raw code. */
+  uint8_t code[];
+};
+
 /** Basic block translation information. */
 #define TYPE_BB 0x42424242
 struct bb_t {
   /** Identifier. */
   bb_id_t id;
 
-  /** Address of first instruction. */
-  uintptr_t pc;
-
-  /** Raw bytes. */
-  uint8_t code[];
+  /** Code chunks. */
+  uint8_t chunks[];
 };
 
 /** Basic block deletion information. */

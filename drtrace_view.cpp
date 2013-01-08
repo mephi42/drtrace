@@ -53,13 +53,15 @@ void dump(void* p, size_t size) {
 #define container_of(ptr, type, member) \
     ((type*)((char*)(ptr) - offsetof(type, member)))
 
-size_t code_size(struct bb_t* bb) {
-  struct tlv_t* tlv = container_of(bb, struct tlv_t, value);
-  return tlv->length - ((char*)bb->code - (char*)tlv);
-}
-
 void dump_code(struct bb_t* bb) {
-  dump(bb->code, code_size(bb));
+  struct tlv_t* tlv = container_of(bb, struct tlv_t, value);
+  void* end = (char*)tlv + tlv->length;
+  for(struct code_chunk_t* chunk = (struct code_chunk_t*)bb->chunks;
+      chunk < end;
+      chunk = (struct code_chunk_t*)&chunk->code[chunk->size]) {
+    fprintf(stderr, "%p: ", (void*)chunk->pc);
+    dump(chunk->code, chunk->size);
+  }
 }
 
 size_t trace_count(struct trace_t* trace) {
@@ -131,6 +133,7 @@ int main(int argc, char** argv) {
                   "TLV offset is 0x%tx\n",
                   entry.bb->id,
                   (char*)tlv - (char*)p);
+          dump_code(entry.bb);
         }
       } else {
         fprintf(stderr,
