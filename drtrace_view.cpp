@@ -53,10 +53,10 @@ void dump(void* p, size_t size) {
 #define container_of(ptr, type, member) \
     ((type*)((char*)(ptr) - offsetof(type, member)))
 
-void dump_code(struct bb_t* bb) {
-  struct tlv_t* tlv = container_of(bb, struct tlv_t, value);
+void dump_code(struct frag_t* frag) {
+  struct tlv_t* tlv = container_of(frag, struct tlv_t, value);
   void* end = (char*)tlv + tlv->length;
-  for(struct code_chunk_t* chunk = (struct code_chunk_t*)bb->chunks;
+  for(struct code_chunk_t* chunk = (struct code_chunk_t*)frag->chunks;
       chunk < end;
       chunk = (struct code_chunk_t*)&chunk->code[chunk->size]) {
     fprintf(stderr, "%p: ", (void*)chunk->pc);
@@ -66,26 +66,26 @@ void dump_code(struct bb_t* bb) {
 
 size_t trace_count(struct trace_t* trace) {
   struct tlv_t* tlv = container_of(trace, struct tlv_t, value);
-  size_t bytes = tlv->length - ((char*)trace->bb_id - (char*)tlv);
-  return bytes / sizeof(trace->bb_id[0]);
+  size_t bytes = tlv->length - ((char*)trace->frag_id - (char*)tlv);
+  return bytes / sizeof(trace->frag_id[0]);
 }
 
-struct bb_entry_t {
-  struct bb_t* bb;
+struct frag_entry_t {
+  struct frag_t* frag;
 };
 
 int main(int argc, char** argv) {
-  bb_id_t track_bb = -1;
+  frag_id_t track_frag = -1;
   for(int i = 1; i < argc; i++) {
     char* arg = argv[i];
-    if(strcmp(arg, "--track-bb") == 0) {
+    if(strcmp(arg, "--track-frag") == 0) {
       i++;
       if(i >= argc) {
-        fprintf(stderr, "fatal: missing --track-bb value\n");
+        fprintf(stderr, "fatal: missing --track-frag value\n");
         return 1;
       }
-      sscanf(argv[i], BB_ID_FMT, &track_bb);
-      fprintf(stderr, "info: tracking bb " BB_ID_FMT "\n", track_bb);
+      sscanf(argv[i], FRAG_ID_FMT, &track_frag);
+      fprintf(stderr, "info: tracking frag " FRAG_ID_FMT "\n", track_frag);
     }
   }
 
@@ -113,53 +113,53 @@ int main(int argc, char** argv) {
   struct tlv_t* previous_tlv = NULL;
   void* last = (char*)p + size;
   size_t tlv_count = 0;
-  std::unordered_map<bb_id_t, bb_entry_t> bbs;
-  size_t bbs_executed = 0;
+  std::unordered_map<frag_id_t, frag_entry_t> frags;
+  size_t frags_executed = 0;
   for(struct tlv_t* tlv = (tlv_t*)p;
       tlv < last;
       previous_tlv = tlv,
       tlv = (struct tlv_t*)((char*)tlv + tlv->length),
       tlv_count++) {
     switch(tlv->type) {
-    case TYPE_BB: {
-      bb_entry_t entry;
-      entry.bb = (bb_t*)tlv->value;
-      auto it = bbs.find(entry.bb->id);
-      if(it == bbs.end()) {
-        bbs[entry.bb->id] = entry;
-        if(entry.bb->id == track_bb) {
+    case TYPE_FRAG: {
+      frag_entry_t entry;
+      entry.frag = (frag_t*)tlv->value;
+      auto it = frags.find(entry.frag->id);
+      if(it == frags.end()) {
+        frags[entry.frag->id] = entry;
+        if(entry.frag->id == track_frag) {
           fprintf(stderr,
-                  "info: basic block " BB_ID_FMT " created, "
+                  "info: fragment " FRAG_ID_FMT " created, "
                   "TLV offset is 0x%tx\n",
-                  entry.bb->id,
+                  entry.frag->id,
                   (char*)tlv - (char*)p);
-          dump_code(entry.bb);
+          dump_code(entry.frag);
         }
       } else {
         fprintf(stderr,
-                "warning: duplicate basic block " BB_ID_FMT " created\n",
-                entry.bb->id);
+                "warning: duplicate fragment " FRAG_ID_FMT " created\n",
+                entry.frag->id);
       }
       break;
     }
-    case TYPE_BB_DEL: {
-      struct bb_del_t* bb_del = (struct bb_del_t*)tlv->value;
-      auto it = bbs.find(bb_del->bb_id);
-      if(it == bbs.end()) {
+    case TYPE_FRAG_DEL: {
+      struct frag_del_t* frag_del = (struct frag_del_t*)tlv->value;
+      auto it = frags.find(frag_del->frag_id);
+      if(it == frags.end()) {
         fprintf(stderr,
-                "warning: non-existent basic block " BB_ID_FMT " deleted, "
+                "warning: non-existent fragment " FRAG_ID_FMT " deleted, "
                 "TLV offset is 0x%tx\n",
-                bb_del->bb_id,
+                frag_del->frag_id,
                 (char*)tlv - (char*)p);
       } else {
-        if(bb_del->bb_id == track_bb) {
+        if(frag_del->frag_id == track_frag) {
           fprintf(stderr,
-                  "info: basic block " BB_ID_FMT " deleted, "
+                  "info: fragment " FRAG_ID_FMT " deleted, "
                   "TLV offset is 0x%tx\n",
-                  bb_del->bb_id,
+                  frag_del->frag_id,
                   (char*)tlv - (char*)p);
         }
-        bbs.erase(it);
+        frags.erase(it);
       }
       break;
     }
@@ -167,15 +167,15 @@ int main(int argc, char** argv) {
       struct trace_t* trace = (struct trace_t*)tlv->value;
       size_t count = trace_count(trace);
       for(size_t i = 0; i < count; i++) {
-        auto it = bbs.find(trace->bb_id[i]);
-        if(it == bbs.end()) {
+        auto it = frags.find(trace->frag_id[i]);
+        if(it == frags.end()) {
           fprintf(stderr,
-                  "warning: non-existent basic block " BB_ID_FMT " executed, "
+                  "warning: non-existent fragment " FRAG_ID_FMT " executed, "
                   "TLV offset is 0x%tx\n",
-                  trace->bb_id[i],
+                  trace->frag_id[i],
                   (char*)tlv - (char*)p);
         }
-        bbs_executed++;
+        frags_executed++;
       }
       break;
     }
@@ -195,8 +195,8 @@ int main(int argc, char** argv) {
     }
   }
   fprintf(stderr, "info: tlv count = %zu\n", tlv_count);
-  fprintf(stderr, "info: bb count = %zu\n", bbs.size());
-  fprintf(stderr, "info: bbs executed = %zu\n", bbs_executed);
+  fprintf(stderr, "info: frag count = %zu\n", frags.size());
+  fprintf(stderr, "info: frags executed = %zu\n", frags_executed);
 
   return 0;
 }

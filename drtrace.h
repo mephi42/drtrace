@@ -2,9 +2,9 @@
 
 #include <stdint.h>
 
-/** Basic block identifier. */
-typedef uint32_t bb_id_t;
-#define BB_ID_FMT "0x%x"
+/** Fragment identifier. */
+typedef uint32_t frag_id_t;
+#define FRAG_ID_FMT "0x%x"
 
 /** Contiguous code chunk. */
 struct code_chunk_t {
@@ -18,21 +18,21 @@ struct code_chunk_t {
   uint8_t code[];
 };
 
-/** Basic block translation information. */
-#define TYPE_BB 0x42424242
-struct bb_t {
+/** Fragment translation information. */
+#define TYPE_FRAG 0x46464646
+struct frag_t {
   /** Identifier. */
-  bb_id_t id;
+  frag_id_t id;
 
   /** Code chunks. */
   uint8_t chunks[];
 };
 
-/** Basic block deletion information. */
-#define TYPE_BB_DEL 0x44444444
-struct bb_del_t {
-  /** Identifier of deleted basic block. */
-  bb_id_t bb_id;
+/** Fragment deletion information. */
+#define TYPE_FRAG_DEL 0x44444444
+struct frag_del_t {
+  /** Identifier of deleted fragment. */
+  frag_id_t frag_id;
 };
 
 /** Instruction execution information. */
@@ -41,8 +41,8 @@ struct trace_t {
   /** Identifier of thread that performed execution. */
   uint32_t thread_id;
 
-  /** Basic block identifiers. */
-  bb_id_t bb_id[];
+  /** Fragment identifiers. */
+  frag_id_t frag_id[];
 };
 
 /** Type, length and value. */
