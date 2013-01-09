@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <unordered_map>
 
+#include "crc32.h"
 #include "drtrace.h"
 
 class fd_t {
@@ -111,89 +112,122 @@ int main(int argc, char** argv) {
   }
 
   struct tlv_t* previous_tlv = NULL;
-  void* last = (char*)p + size;
+  void* trace_end = (char*)p + size;
+  size_t block_count = 0;
   size_t tlv_count = 0;
   std::unordered_map<frag_id_t, frag_entry_t> frags;
   size_t frags_executed = 0;
-  for(struct tlv_t* tlv = (tlv_t*)p;
-      tlv < last;
-      previous_tlv = tlv,
-      tlv = (struct tlv_t*)((char*)tlv + tlv->length),
-      tlv_count++) {
-    switch(tlv->type) {
-    case TYPE_FRAG: {
-      frag_entry_t entry;
-      entry.frag = (frag_t*)tlv->value;
-      auto it = frags.find(entry.frag->id);
-      if(it == frags.end()) {
-        frags[entry.frag->id] = entry;
-        if(entry.frag->id == track_frag) {
-          fprintf(stderr,
-                  "info: fragment " FRAG_ID_FMT " created, "
-                  "TLV offset is 0x%tx\n",
-                  entry.frag->id,
-                  (char*)tlv - (char*)p);
-          dump_code(entry.frag);
-        }
-      } else {
-        fprintf(stderr,
-                "warning: duplicate fragment " FRAG_ID_FMT " created\n",
-                entry.frag->id);
-      }
-      break;
+  for(struct block_t* block = (block_t*)p;
+      block < trace_end;
+      block = (struct block_t*)((char*)block + block->length),
+      block_count++) {
+    uint32_t expected = block->crc32;
+
+    const size_t field_size = sizeof(block->crc32);
+    char* field_start = (char*)&block->crc32;
+    char* field_end = field_start + field_size;
+    char field_zero[field_size];
+    memset(field_zero, 0, sizeof(field_zero));
+    uint32_t computed = updcrc32(-1,
+                                 (char*)block,
+                                 field_start - (char*)block);
+    computed = updcrc32(computed, field_zero, sizeof(field_zero));
+    computed = updcrc32(computed,
+                        field_end,
+                        (char*)block + block->length - field_end);
+    computed = ~computed;
+
+    if(expected != computed) {
+      fprintf(stderr,
+              "warning: crc32 check failed: "
+              "expected 0x%x, but was 0x%x, "
+              "block offset is 0x%tx\n",
+              expected,
+              computed,
+              (char*)block - (char*)p);
     }
-    case TYPE_FRAG_DEL: {
-      struct frag_del_t* frag_del = (struct frag_del_t*)tlv->value;
-      auto it = frags.find(frag_del->frag_id);
-      if(it == frags.end()) {
-        fprintf(stderr,
-                "warning: non-existent fragment " FRAG_ID_FMT " deleted, "
-                "TLV offset is 0x%tx\n",
-                frag_del->frag_id,
-                (char*)tlv - (char*)p);
-      } else {
-        if(frag_del->frag_id == track_frag) {
+    void* block_end = (char*)block + block->length;
+    for(struct tlv_t* tlv = (tlv_t*)&block->data;
+        tlv < block_end;
+        previous_tlv = tlv,
+        tlv = (struct tlv_t*)((char*)tlv + tlv->length),
+        tlv_count++) {
+      switch(tlv->type) {
+      case TYPE_FRAG: {
+        frag_entry_t entry;
+        entry.frag = (frag_t*)tlv->value;
+        auto it = frags.find(entry.frag->id);
+        if(it == frags.end()) {
+          frags[entry.frag->id] = entry;
+          if(entry.frag->id == track_frag) {
+            fprintf(stderr,
+                    "info: fragment " FRAG_ID_FMT " created, "
+                    "TLV offset is 0x%tx\n",
+                    entry.frag->id,
+                    (char*)tlv - (char*)p);
+            dump_code(entry.frag);
+          }
+        } else {
           fprintf(stderr,
-                  "info: fragment " FRAG_ID_FMT " deleted, "
+                  "warning: duplicate fragment " FRAG_ID_FMT " created\n",
+                  entry.frag->id);
+        }
+        break;
+      }
+      case TYPE_FRAG_DEL: {
+        struct frag_del_t* frag_del = (struct frag_del_t*)tlv->value;
+        auto it = frags.find(frag_del->frag_id);
+        if(it == frags.end()) {
+          fprintf(stderr,
+                  "warning: non-existent fragment " FRAG_ID_FMT " deleted, "
                   "TLV offset is 0x%tx\n",
                   frag_del->frag_id,
                   (char*)tlv - (char*)p);
+        } else {
+          if(frag_del->frag_id == track_frag) {
+            fprintf(stderr,
+                    "info: fragment " FRAG_ID_FMT " deleted, "
+                    "TLV offset is 0x%tx\n",
+                    frag_del->frag_id,
+                    (char*)tlv - (char*)p);
+          }
+          frags.erase(it);
         }
-        frags.erase(it);
+        break;
       }
-      break;
-    }
-    case TYPE_TRACE: {
-      struct trace_t* trace = (struct trace_t*)tlv->value;
-      size_t count = trace_count(trace);
-      for(size_t i = 0; i < count; i++) {
-        auto it = frags.find(trace->frag_id[i]);
-        if(it == frags.end()) {
-          fprintf(stderr,
-                  "warning: non-existent fragment " FRAG_ID_FMT " executed, "
-                  "TLV offset is 0x%tx\n",
-                  trace->frag_id[i],
-                  (char*)tlv - (char*)p);
+      case TYPE_TRACE: {
+        struct trace_t* trace = (struct trace_t*)tlv->value;
+        size_t count = trace_count(trace);
+        for(size_t i = 0; i < count; i++) {
+          auto it = frags.find(trace->frag_id[i]);
+          if(it == frags.end()) {
+            fprintf(stderr,
+                    "warning: non-existent fragment " FRAG_ID_FMT " executed, "
+                    "TLV offset is 0x%tx\n",
+                    trace->frag_id[i],
+                    (char*)tlv - (char*)p);
+          }
+          frags_executed++;
         }
-        frags_executed++;
+        break;
       }
-      break;
-    }
-    default:
-      fprintf(stderr,
-              "fatal: unexpected TLV type at offset 0x%tx: 0x%zx\n",
-              (char*)tlv - (char*)p,
-              (size_t)tlv->type);
-      if(previous_tlv) {
+      default:
         fprintf(stderr,
-                "info: previous TLV is at offset 0x%tx\n",
-                (char*)previous_tlv - (char*)p);
-      } else {
-        fprintf(stderr, "info: there is no previous TLV\n");
+                "fatal: unexpected TLV type at offset 0x%tx: 0x%zx\n",
+                (char*)tlv - (char*)p,
+                (size_t)tlv->type);
+        if(previous_tlv) {
+          fprintf(stderr,
+                  "info: previous TLV is at offset 0x%tx\n",
+                  (char*)previous_tlv - (char*)p);
+        } else {
+          fprintf(stderr, "info: there is no previous TLV\n");
+        }
+        return 1;
       }
-      return 1;
     }
   }
+  fprintf(stderr, "info: block count = %zu\n", block_count);
   fprintf(stderr, "info: tlv count = %zu\n", tlv_count);
   fprintf(stderr, "info: frag count = %zu\n", frags.size());
   fprintf(stderr, "info: frags executed = %zu\n", frags_executed);

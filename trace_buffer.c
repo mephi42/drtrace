@@ -1,5 +1,6 @@
 #include <inttypes.h>
 
+#include "crc32.h"
 #include "trace_buffer.h"
 
 size_t tb_available(struct trace_buffer_t* tb) {
@@ -17,11 +18,14 @@ void tb_flush(struct trace_buffer_t* tb) {
 
   tb_tlv_complete(tb);
 
-  size = tb->current - (void*)(tb + 1);
-  if(size == 0) {
+  size = tb->current - (void*)&tb->block;
+  if(size == sizeof(struct block_t)) {
     // Nothing to do.
     return;
   }
+  tb->block.length = (uint32_t)size;
+  tb->block.crc32 = 0;
+  tb->block.crc32 = crc32((char*)&tb->block, size);
 
   // Write data.
   dr_mutex_lock(tb->mutex);
@@ -36,7 +40,7 @@ void tb_flush(struct trace_buffer_t* tb) {
              (unsigned int)tb->thread_id,
              (unsigned int)size,
              pos);
-  written = dr_write_file(tb->file, tb + 1, size);
+  written = dr_write_file(tb->file, &tb->block, size);
   dr_mutex_unlock(tb->mutex);
   if(written != size) {
     dr_fprintf(STDERR, "fatal: dr_write_file() failed\n");

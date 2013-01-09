@@ -23,6 +23,9 @@ struct trace_buffer_t {
 
   /** Current position in raw TLV data. */
   void* current;
+
+  /** Block header. */
+  struct block_t block;
 };
 
 /** Number of available bytes. */

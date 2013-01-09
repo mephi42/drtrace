@@ -45,6 +45,18 @@ struct trace_t {
   frag_id_t frag_id[];
 };
 
+/** Block. */
+struct block_t {
+  /** Length. */
+  uint32_t length;
+
+  /** Checksum. */
+  uint32_t crc32;
+
+  /** Data. */
+  uint8_t data[];
+};
+
 /** Type, length and value. */
 struct tlv_t {
   /** Type. */
