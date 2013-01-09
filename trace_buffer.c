@@ -31,7 +31,7 @@ void tb_flush(struct trace_buffer_t* tb) {
     dr_exit_process(1);
   }
   dr_fprintf(STDERR,
-             "info: flushing tb %p thread=0x%x size=%u offset=" PRId64 "\n",
+             "info: flushing tb %p thread=0x%x size=%u offset=%" PRId64 "\n",
              tb,
              (unsigned int)tb->thread_id,
              (unsigned int)size,
@@ -70,8 +70,10 @@ void tb_tlv(struct trace_buffer_t* tb, uint32_t type) {
 }
 
 void tb_tlv_cancel(struct trace_buffer_t* tb) {
-  tb->current = tb->current_tlv;
-  tb->current_tlv = NULL;
+  if(tb->current_tlv) {
+    tb->current = tb->current_tlv;
+    tb->current_tlv = NULL;
+  }
 }
 
 bool tb_tlv_is(struct trace_buffer_t* tb, uint32_t type) {
