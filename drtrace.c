@@ -250,8 +250,9 @@ void record_frag(void* drcontext,
 
 /** Adds instrumentation that records fragment execution. */
 void instrument_frag(void* drcontext, instrlist_t* frag, frag_id_t id) {
+  ptr_int_t frag_id = id; // sign-extended for OPND_CREATE_INT32
 #ifdef TRACE_DEBUG
-  dr_fprintf(STDERR, "debug: instrument_frag(" FRAG_ID_FMT ")\n", id);
+  dr_fprintf(STDERR, "debug: instrument_frag(0x%" PRIxPTR ")\n", frag_id);
 #endif
   dr_insert_clean_call(drcontext,
                        frag,
@@ -259,7 +260,7 @@ void instrument_frag(void* drcontext, instrlist_t* frag, frag_id_t id) {
                        &handle_frag_exec,
                        false,
                        1,
-                       OPND_CREATE_INT32(id));
+                       OPND_CREATE_INT32(frag_id));
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR, "debug: instrument_frag() done\n");
 #endif

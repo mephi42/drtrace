@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 /** Fragment identifier. */
-typedef uint32_t frag_id_t;
+typedef int32_t frag_id_t;
 #define FRAG_ID_FMT "0x%x"
-#define FRAG_ID_MSB 0x80000000u
+#define FRAG_ID_MSB 0x80000000
 
 /** Contiguous code chunk. */
 struct code_chunk_t {
