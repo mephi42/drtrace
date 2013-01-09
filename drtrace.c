@@ -47,8 +47,8 @@ void* tags_lock;
  *  Must be called with tags_lock held. */
 struct tag_info_t* tag_info_new(void* tag) {
   struct tag_info_t* tag_info = dr_global_alloc(sizeof(struct tag_info_t));
-  tag_info->id = next_id++;
-  tag_info->counter = 1;
+  tag_info->id = 0;
+  tag_info->counter = 0;
   hashtable_add(&tags, tag, tag_info);
   return tag_info;
 }
@@ -267,16 +267,55 @@ void instrument_frag(void* drcontext, instrlist_t* frag, frag_id_t id) {
 #endif
 }
 
+/** Common handler for basic blocks and traces. */
+void handle_frag(void* drcontext,
+                 void* tag,
+                 instrlist_t* frag,
+                 bool new_frag,
+                 bool instrument,
+                 frag_id_t id_mask) {
+  struct trace_buffer_t* tb;
+  frag_id_t deleted_id;
+  struct tag_info_t* tag_info;
+  frag_id_t id;
+
+  tb = dr_get_tls_field(drcontext);
+
+  deleted_id = 0;
+  dr_mutex_lock(tags_lock);
+  tag_info = hashtable_lookup(&tags, tag);
+  if(tag_info == NULL) {
+    tag_info = tag_info_new(tag);
+  }
+  if(new_frag) {
+    deleted_id = tag_info_reset(tag_info);
+    tag_info->id |= id_mask;
+  } else {
+    tag_info_reference(tag_info);
+  }
+  id = tag_info->id;
+  dr_mutex_unlock(tags_lock);
+
+  if(deleted_id) {
+    record_deletion(tb, deleted_id);
+  }
+
+  if(new_frag) {
+    record_frag(drcontext, frag, id);
+  }
+
+  if(instrument) {
+    instrument_frag(drcontext, frag, id);
+  }
+}
+
 dr_emit_flags_t handle_bb(void* drcontext,
                           void* tag,
                           instrlist_t* bb,
                           bool for_trace,
                           bool translating) {
-  struct trace_buffer_t* tb;
-  bool record_creation;
-  frag_id_t record_deleted_id;
-  frag_id_t id;
-  struct tag_info_t* tag_info;
+  bool new_frag;
+  bool instrument;
 
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
@@ -288,48 +327,37 @@ dr_emit_flags_t handle_bb(void* drcontext,
 
   check_drcontext(drcontext, "handle_bb");
 
-  tb = dr_get_tls_field(drcontext);
-
-  record_deleted_id = 0;
-  record_creation = !translating;
-  dr_mutex_lock(tags_lock);
-  tag_info = hashtable_lookup(&tags, tag);
-  if(tag_info == NULL) {
-    // This is the first time we see this tag.
-    tag_info = tag_info_new(tag);
-  } else {
-    // This tag was already seen.
-    if(for_trace) {
-      // Use the same identifier for trace instrumentation.
-      record_creation = false;
-      tag_info_reference(tag_info);
-    } else {
-      // This is tag reuse. Generate a new identifier and delete an old one.
-      record_deleted_id = tag_info_reset(tag_info);
-    }
+  new_frag = true;
+  instrument = true;
+  if(for_trace) {
+    // Traces are instrumented separately, we only need to increment counter.
+    new_frag = false;
+    instrument = false;
   }
-  id = tag_info->id;
-  dr_mutex_unlock(tags_lock);
+  if(translating) {
+    // Reuse existing fragment when translating.
+    new_frag = false;
+  }
 
+  handle_frag(drcontext, tag, bb, new_frag, instrument, 0);
+
+  return DR_EMIT_DEFAULT;
+}
+
+dr_emit_flags_t handle_trace(void* drcontext,
+                             void* tag,
+                             instrlist_t* trace,
+                             bool translating) {
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
-             "debug: id=" FRAG_ID_FMT
-             ", record_deletion=" FRAG_ID_FMT
-             ", record_creation=%u\n",
-             id,
-             report_deletion,
-             record_creation);
+             "debug: handle_trace(tag=%p, translating=%u)\n",
+             tag,
+             translating);
 #endif
 
-  if(record_deleted_id) {
-    record_deletion(tb, record_deleted_id);
-  }
+  check_drcontext(drcontext, "handle_trace");
 
-  if(record_creation) {
-    record_frag(drcontext, bb, id);
-  }
-
-  instrument_frag(drcontext, bb, id);
+  handle_frag(drcontext, tag, trace, !translating, true, FRAG_ID_MSB);
 
   return DR_EMIT_DEFAULT;
 }
@@ -452,6 +480,7 @@ void dr_exit() {
   dr_unregister_thread_init_event(&handle_thread_init);
   dr_unregister_thread_exit_event(&handle_thread_exit);
   dr_unregister_bb_event(&handle_bb);
+  dr_unregister_trace_event(&handle_trace);
   dr_unregister_delete_event(&handle_delete);
 }
 
@@ -483,5 +512,6 @@ DR_EXPORT void dr_init(client_id_t id) {
   dr_register_thread_init_event(&handle_thread_init);
   dr_register_thread_exit_event(&handle_thread_exit);
   dr_register_bb_event(&handle_bb);
+  dr_register_trace_event(&handle_trace);
   dr_register_delete_event(&handle_delete);
 }

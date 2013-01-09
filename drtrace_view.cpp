@@ -111,7 +111,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  struct tlv_t* previous_tlv = NULL;
   void* trace_end = (char*)p + size;
   size_t block_count = 0;
   size_t tlv_count = 0;
@@ -121,8 +120,18 @@ int main(int argc, char** argv) {
       block < trace_end;
       block = (struct block_t*)((char*)block + block->length),
       block_count++) {
-    uint32_t expected = block->crc32;
+    // Validate block length.
+    void* block_end = (char*)block + block->length;
+    if(block_end < (char*)block + sizeof(struct block_t) ||
+       block_end > trace_end) {
+      fprintf(stderr,
+              "fatal: invalid block at offset 0x%tx of length 0x%x\n",
+              (char*)block - (char*)p,
+              block->length);
+      return 1;
+    }
 
+    // Validate block data.
     const size_t field_size = sizeof(block->crc32);
     char* field_start = (char*)&block->crc32;
     char* field_end = field_start + field_size;
@@ -134,19 +143,20 @@ int main(int argc, char** argv) {
     computed = updcrc32(computed, field_zero, sizeof(field_zero));
     computed = updcrc32(computed,
                         field_end,
-                        (char*)block + block->length - field_end);
+                        (char*)block_end - field_end);
     computed = ~computed;
 
-    if(expected != computed) {
+    if(block->crc32 != computed) {
       fprintf(stderr,
               "warning: crc32 check failed: "
               "expected 0x%x, but was 0x%x, "
               "block offset is 0x%tx\n",
-              expected,
+              block->crc32,
               computed,
               (char*)block - (char*)p);
     }
-    void* block_end = (char*)block + block->length;
+
+    struct tlv_t* previous_tlv = NULL;
     for(struct tlv_t* tlv = (tlv_t*)&block->data;
         tlv < block_end;
         previous_tlv = tlv,

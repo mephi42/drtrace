@@ -5,6 +5,7 @@
 /** Fragment identifier. */
 typedef uint32_t frag_id_t;
 #define FRAG_ID_FMT "0x%x"
+#define FRAG_ID_MSB 0x80000000u
 
 /** Contiguous code chunk. */
 struct code_chunk_t {
