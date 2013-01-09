@@ -43,9 +43,25 @@ frag_id_t next_id = 1;
 /** Synchronizes access to tags and next_id. */
 void* tags_lock;
 
-/** Allocates a new tag_info structure. */
-struct tag_info_t* tag_info_alloc() {
-  return dr_global_alloc(sizeof(struct tag_info_t));
+/** Allocates, initializes and registers a new tag_info structure.
+ *  Must be called with tags_lock held. */
+struct tag_info_t* tag_info_new(void* tag) {
+  struct tag_info_t* tag_info = dr_global_alloc(sizeof(struct tag_info_t));
+  tag_info->id = next_id++;
+  tag_info->counter = 1;
+  hashtable_add(&tags, tag, tag_info);
+  return tag_info;
+}
+
+void tag_info_reference(struct tag_info_t* tag_info) {
+  tag_info->counter++;
+}
+
+frag_id_t tag_info_reset(struct tag_info_t* tag_info) {
+  frag_id_t id = tag_info->id;
+  tag_info->id = next_id++;
+  tag_info->counter++;
+  return id;
 }
 
 /** Releases existing tag_info structure. */
@@ -280,26 +296,19 @@ dr_emit_flags_t handle_bb(void* drcontext,
   tag_info = hashtable_lookup(&tags, tag);
   if(tag_info == NULL) {
     // This is the first time we see this tag.
-    tag_info = tag_info_alloc();
-    id = next_id++;
-    tag_info->id = id;
-    tag_info->counter = 1;
-    hashtable_add(&tags, tag, tag_info);
+    tag_info = tag_info_new(tag);
   } else {
     // This tag was already seen.
     if(for_trace) {
       // Use the same identifier for trace instrumentation.
       record_creation = false;
-      id = tag_info->id;
-      tag_info->counter++;
+      tag_info_reference(tag_info);
     } else {
       // This is tag reuse. Generate a new identifier and delete an old one.
-      record_deleted_id = tag_info->id;
-      id = next_id++;
-      tag_info->id = id;
-      tag_info->counter++;
+      record_deleted_id = tag_info_reset(tag_info);
     }
   }
+  id = tag_info->id;
   dr_mutex_unlock(tags_lock);
 
 #ifdef TRACE_DEBUG
