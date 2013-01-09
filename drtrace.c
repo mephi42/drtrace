@@ -234,12 +234,28 @@ void record_frag(void* drcontext,
   }
 }
 
+/** Adds instrumentation that records fragment execution. */
+void instrument_frag(void* drcontext, instrlist_t* frag, frag_id_t id) {
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: instrument_frag(" FRAG_ID_FMT ")\n", id);
+#endif
+  dr_insert_clean_call(drcontext,
+                       frag,
+                       instrlist_first(frag),
+                       &handle_frag_exec,
+                       false,
+                       1,
+                       OPND_CREATE_INT32(id));
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: instrument_frag() done\n");
+#endif
+}
+
 dr_emit_flags_t handle_bb(void* drcontext,
                           void* tag,
                           instrlist_t* bb,
                           bool for_trace,
                           bool translating) {
-  instr_t* first;
   struct trace_buffer_t* tb;
   bool record_creation;
   frag_id_t record_deleted_id;
@@ -256,7 +272,6 @@ dr_emit_flags_t handle_bb(void* drcontext,
 
   check_drcontext(drcontext, "handle_bb");
 
-  first = instrlist_first(bb);
   tb = dr_get_tls_field(drcontext);
 
   record_deleted_id = 0;
@@ -305,19 +320,7 @@ dr_emit_flags_t handle_bb(void* drcontext,
     record_frag(drcontext, bb, id);
   }
 
-#ifdef TRACE_DEBUG
-  dr_fprintf(STDERR, "debug: instrumenting..\n");
-#endif
-  dr_insert_clean_call(drcontext,
-                       bb,
-                       first,
-                       &handle_frag_exec,
-                       false,
-                       1,
-                       OPND_CREATE_INT32(id));
-#ifdef TRACE_DEBUG
-  dr_fprintf(STDERR, "debug: done\n");
-#endif
+  instrument_frag(drcontext, bb, id);
 
   return DR_EMIT_DEFAULT;
 }
