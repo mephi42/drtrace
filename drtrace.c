@@ -1,7 +1,4 @@
 #include <dr_api.h>
-#include <dr_events.h>
-#include <dr_ir_utils.h>
-#include <dr_tools.h>
 #include <inttypes.h>
 #include <hashtable.h>
 #include <string.h>

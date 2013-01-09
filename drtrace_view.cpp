@@ -1,7 +1,10 @@
 #define _LARGEFILE64_SOURCE
+#define __STDC_FORMAT_MACROS
 #define TRACE_FILE "./trace.out"
 
+#include <dr_api.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -60,8 +63,23 @@ void dump_code(struct frag_t* frag) {
   for(struct code_chunk_t* chunk = (struct code_chunk_t*)frag->chunks;
       chunk < end;
       chunk = (struct code_chunk_t*)&chunk->code[chunk->size]) {
-    fprintf(stderr, "%p: ", (void*)chunk->pc);
-    dump(chunk->code, chunk->size);
+    instr_t instr;
+    instr_init(GLOBAL_DCONTEXT, &instr);
+    for(size_t offset = 0; offset < chunk->size; ) {
+      app_pc pc = (app_pc)chunk->pc + offset;
+      fprintf(stderr, "%p: ", pc);
+      instr_reset(GLOBAL_DCONTEXT, &instr);
+      pc = decode_from_copy(GLOBAL_DCONTEXT, &chunk->code[offset], pc, &instr);
+      if(pc == NULL) {
+        fprintf(stderr, "???\n");
+        break;
+      }
+      char buf[256];
+      instr_disassemble_to_buffer(GLOBAL_DCONTEXT, &instr, buf, sizeof(buf));
+      fprintf(stderr, "%s\n", buf);
+      offset = pc - (app_pc)&chunk->code;
+    }
+    instr_free(GLOBAL_DCONTEXT, &instr);
   }
 }
 
