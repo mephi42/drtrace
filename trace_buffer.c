@@ -1,3 +1,5 @@
+#include <inttypes.h>
+
 #include "trace_buffer.h"
 
 size_t tb_available(struct trace_buffer_t* tb) {
@@ -29,11 +31,11 @@ void tb_flush(struct trace_buffer_t* tb) {
     dr_exit_process(1);
   }
   dr_fprintf(STDERR,
-             "info: flushing tb %p thread=0x%x size=%u offset=%p\n",
+             "info: flushing tb %p thread=0x%x size=%u offset=" PRId64 "\n",
              tb,
              (unsigned int)tb->thread_id,
              (unsigned int)size,
-             (void*)pos);
+             pos);
   written = dr_write_file(tb->file, tb + 1, size);
   dr_mutex_unlock(tb->mutex);
   if(written != size) {

@@ -370,7 +370,7 @@ struct trace_buffer_t* tb_create(thread_id_t thread_id) {
     dr_fprintf(STDERR, "fatal: dr_map_file() failed\n");
     dr_exit_process(1);
   }
-  if((uint64_t)tb % PAGE_SIZE != 0 || size != MMAP_SIZE) {
+  if((uintptr_t)tb % PAGE_SIZE != 0 || size != MMAP_SIZE) {
     dr_fprintf(STDERR, "fatal: dr_map_file() returned unusable area\n");
     dr_exit_process(1);
   }
