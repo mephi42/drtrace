@@ -15,9 +15,6 @@ struct trace_buffer_t {
   /** Backing file lock. */
   void* mutex;
 
-  /** Associated thread identifier or 0. */
-  thread_id_t thread_id;
-
   /** TLV currently being written. */
   struct tlv_t* current_tlv;
 

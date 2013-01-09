@@ -2,6 +2,7 @@
 #include <dr_events.h>
 #include <dr_ir_utils.h>
 #include <dr_tools.h>
+#include <inttypes.h>
 #include <hashtable.h>
 #include <string.h>
 
@@ -443,23 +444,23 @@ void handle_thread_init(void* drcontext) {
   check_drcontext(drcontext, "handle_thread_init");
   thread_id = dr_get_thread_id(drcontext);
   dr_fprintf(STDERR,
-             "info: initializing thread 0x%x..\n",
-             (unsigned int)thread_id);
+             "info: initializing thread 0x%" PRIx64 "..\n",
+             (uint64_t)thread_id);
   tb = tb_create(thread_id);
   dr_set_tls_field(drcontext, tb);
   tb_tlv(tb, TYPE_TRACE);
 }
 
 void handle_thread_exit(void* drcontext) {
+  thread_id_t thread_id;
   struct trace_buffer_t* tb;
 
   check_drcontext(drcontext, "handle_thread_exit");
-  tb = dr_get_tls_field(drcontext);
-
+  thread_id = dr_get_thread_id(drcontext);
   dr_fprintf(STDERR,
-             "info: cleaning up thread 0x%x..\n",
-             (unsigned int)tb->thread_id);
-
+             "info: cleaning up thread 0x%" PRIx64 "..\n",
+             (uint64_t)thread_id);
+  tb = dr_get_tls_field(drcontext);
   tb_delete(tb);
   dr_set_tls_field(drcontext, NULL);
 }

@@ -54,6 +54,9 @@ struct block_t {
   /** Checksum. */
   uint32_t crc32;
 
+  /** Associated thread identifier. */
+  uint64_t thread_id;
+
   /** Data. */
   uint8_t data[];
 };

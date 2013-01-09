@@ -35,9 +35,10 @@ void tb_flush(struct trace_buffer_t* tb) {
     dr_exit_process(1);
   }
   dr_fprintf(STDERR,
-             "info: flushing tb %p thread=0x%x size=%u offset=%" PRId64 "\n",
+             "info: flushing tb %p thread=0x%" PRIx64
+             " size=%u offset=%" PRId64 "\n",
              tb,
-             (unsigned int)tb->thread_id,
+             tb->block.thread_id,
              (unsigned int)size,
              pos);
   written = dr_write_file(tb->file, &tb->block, size);
@@ -59,7 +60,7 @@ void tb_init(struct trace_buffer_t* tb,
   tb->size = size;
   tb->file = file;
   tb->mutex = mutex;
-  tb->thread_id = thread_id;
+  tb->block.thread_id = (uint64_t)thread_id;
   tb->current_tlv = NULL;
   tb->current = tb + 1;
 }
