@@ -5,6 +5,7 @@
 #include <dr_api.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <list>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -129,13 +130,15 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  int rc = 0;
   void* trace_end = (char*)p + size;
   size_t block_count = 0;
   size_t tlv_count = 0;
   std::unordered_map<frag_id_t, frag_entry_t> frags;
+  std::unordered_map<uint32_t, std::list<struct block_t*>> crc_blocks;
   size_t frags_executed = 0;
-  for(struct block_t* block = (block_t*)p;
-      block < trace_end;
+  for(struct block_t* block = (struct block_t*)p;
+      block < trace_end && rc == 0;
       block = (struct block_t*)((char*)block + block->length),
       block_count++) {
     // Validate block length.
@@ -146,7 +149,8 @@ int main(int argc, char** argv) {
               "fatal: invalid block at offset 0x%tx of length 0x%x\n",
               (char*)block - (char*)p,
               block->length);
-      return 1;
+      rc = 1;
+      break;
     }
 
     // Validate block data.
@@ -166,17 +170,20 @@ int main(int argc, char** argv) {
 
     if(block->crc32 != computed) {
       fprintf(stderr,
-              "warning: crc32 check failed: "
+              "fatal: crc32 check failed: "
               "expected 0x%x, but was 0x%x, "
               "block offset is 0x%tx\n",
               block->crc32,
               computed,
               (char*)block - (char*)p);
+      rc = 1;
+      break;
     }
+    crc_blocks[block->crc32].push_back(block);
 
     struct tlv_t* previous_tlv = NULL;
     for(struct tlv_t* tlv = (tlv_t*)&block->data;
-        tlv < block_end;
+        tlv < block_end && rc == 0;
         previous_tlv = tlv,
         tlv = (struct tlv_t*)((char*)tlv + tlv->length),
         tlv_count++) {
@@ -197,8 +204,13 @@ int main(int argc, char** argv) {
           }
         } else {
           fprintf(stderr,
-                  "warning: duplicate fragment " FRAG_ID_FMT " created\n",
-                  entry.frag->id);
+                  "fatal: duplicate fragment " FRAG_ID_FMT " created, "
+                  "TLV offset is 0x%tx, "
+                  "original offset is 0x%tx\n",
+                  entry.frag->id,
+                  (char*)tlv - (char*)p,
+                  (char*)it->second.frag - (char*)p);
+          rc = 1;
         }
         break;
       }
@@ -206,11 +218,13 @@ int main(int argc, char** argv) {
         struct frag_del_t* frag_del = (struct frag_del_t*)tlv->value;
         auto it = frags.find(frag_del->frag_id);
         if(it == frags.end()) {
+#if 0
           fprintf(stderr,
                   "warning: non-existent fragment " FRAG_ID_FMT " deleted, "
                   "TLV offset is 0x%tx\n",
                   frag_del->frag_id,
                   (char*)tlv - (char*)p);
+#endif
         } else {
           if(frag_del->frag_id == track_frag) {
             fprintf(stderr,
@@ -229,11 +243,13 @@ int main(int argc, char** argv) {
         for(size_t i = 0; i < count; i++) {
           auto it = frags.find(trace->frag_id[i]);
           if(it == frags.end()) {
+#if 0
             fprintf(stderr,
                     "warning: non-existent fragment " FRAG_ID_FMT " executed, "
                     "TLV offset is 0x%tx\n",
                     trace->frag_id[i],
                     (char*)tlv - (char*)p);
+#endif
           }
           frags_executed++;
         }
@@ -251,7 +267,8 @@ int main(int argc, char** argv) {
         } else {
           fprintf(stderr, "info: there is no previous TLV\n");
         }
-        return 1;
+        rc = 1;
+        break;
       }
     }
   }
@@ -260,5 +277,13 @@ int main(int argc, char** argv) {
   fprintf(stderr, "info: frag count = %zu\n", frags.size());
   fprintf(stderr, "info: frags executed = %zu\n", frags_executed);
 
-  return 0;
+  for(auto it = crc_blocks.begin(); it != crc_blocks.end(); ++it) {
+    if(it->second.size() > 1) {
+      fprintf(stderr,
+              "info: there are multiple blocks with crc 0x%" PRIx32 "\n",
+              it->first);
+    }
+  }
+
+  return rc;
 }

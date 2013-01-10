@@ -1,12 +1,15 @@
 #include <dr_api.h>
 #include <inttypes.h>
 #include <hashtable.h>
+#include <signal.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "drtrace.h"
 #include "trace_buffer.h"
 
 //#define TRACE_DEBUG
+//#define TRACE_DUMP_BB
 #define TRACE_BUFFER_SIZE (16 * PAGE_SIZE)
 #define MMAP_SIZE (TRACE_BUFFER_SIZE + PAGE_SIZE)
 #define TRACE_FILE_NAME "./trace.out"
@@ -23,6 +26,12 @@ struct trace_buffer_t* trace_buffer;
 /** Synchronizes access to global trace buffer. */
 void* trace_buffer_lock;
 
+/** Information about instrumentation. */
+struct instr_info_t {
+  /** Offset of fragment id store instruction. */
+  uint32_t store_offset;
+};
+
 /** Information associated with fragment tags. */
 struct tag_info_t {
   /** Unique identifier (tags are not unique). */
@@ -30,13 +39,16 @@ struct tag_info_t {
 
   /** Number of deletion calls to expect. */
   uint32_t counter;
+
+  /** Information about instrumentation code for this particular tag. */
+  struct instr_info_t instr_info;
 };
 
 /** Mapping from tags to tag_info_t structures. */
 hashtable_t tags;
 
 /** Fragment identifier. */
-frag_id_t next_id = 1;
+volatile frag_id_t next_id = 1;
 
 /** Synchronizes access to tags and next_id. */
 void* tags_lock;
@@ -47,6 +59,7 @@ struct tag_info_t* tag_info_new(void* tag) {
   struct tag_info_t* tag_info = dr_global_alloc(sizeof(struct tag_info_t));
   tag_info->id = 0;
   tag_info->counter = 0;
+  memset(&tag_info->instr_info, 0, sizeof(struct instr_info_t));
   hashtable_add(&tags, tag, tag_info);
   return tag_info;
 }
@@ -104,22 +117,6 @@ void record_deletion(struct trace_buffer_t* tb, frag_id_t id) {
       break;
     }
   }
-}
-
-/** Records fragment execution event into trace buffer of current thread. */
-void handle_frag_exec(frag_id_t id) {
-  void* drcontext;
-  struct trace_buffer_t* tb;
-
-  drcontext = dr_get_current_drcontext();
-  check_drcontext(drcontext, "handle_bb_exec");
-  tb = dr_get_tls_field(drcontext);
-  if(tb_available(tb) < sizeof(void*)) {
-    tb_flush(tb);
-    tb_tlv(tb, TYPE_TRACE);
-  }
-  *(frag_id_t*)tb->current = id;
-  tb->current += sizeof(frag_id_t);
 }
 
 /** Contiguous code chunk information. */
@@ -248,22 +245,185 @@ void record_frag(void* drcontext,
   }
 }
 
+/** Returns offset, in bytes, between starts of the first and the second
+ *  instruction. Returns -1 if the second instruction does not follow the first
+ *  instruction. */
+int get_offset(void* drcontext, instr_t* first, instr_t* second) {
+  int offset = 0;
+  while(first != second) {
+    if(first == NULL) {
+      return -1;
+    }
+    offset += instr_length(drcontext, first);
+    first = instr_get_next(first);
+  }
+  return offset;
+}
+
+/** Combines instr_set_translation and instrlist_meta_preinsert calls. */
+instr_t* prexl8(instrlist_t* frag, instr_t* where, instr_t* instr, app_pc pc) {
+  instr_set_translation(instr, pc);
+  instrlist_meta_preinsert(frag, where, instr);
+  return instr;
+}
+
 /** Adds instrumentation that records fragment execution. */
-void instrument_frag(void* drcontext, instrlist_t* frag, frag_id_t id) {
+struct instr_info_t instrument_frag(void* drcontext,
+                                    instrlist_t* frag,
+                                    frag_id_t id) {
+  const size_t offsetof_current = offsetof(struct trace_buffer_t, current);
   ptr_int_t frag_id = id; // sign-extended for OPND_CREATE_INT32
+  instr_t* first = instrlist_first(frag);
+  app_pc pc = instr_get_app_pc(first);
+  instr_t* store;
+  struct instr_info_t instr_info;
+
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR, "debug: instrument_frag(0x%" PRIxPTR ")\n", frag_id);
 #endif
-  dr_insert_clean_call(drcontext,
-                       frag,
-                       instrlist_first(frag),
-                       &handle_frag_exec,
-                       false,
-                       1,
-                       OPND_CREATE_INT32(frag_id));
-#ifdef TRACE_DEBUG
-  dr_fprintf(STDERR, "debug: instrument_frag() done\n");
+#ifdef TRACE_DUMP_BB
+  instrlist_disassemble(drcontext, pc, frag, STDERR);
 #endif
+
+#define INSERT(instr) prexl8(frag, first, (instr), pc)
+
+  // Add instrumentation.
+  // XXX: use dead registers to avoid save/restore.
+  reg_id_t tls_reg = DR_REG_XAX;
+  reg_id_t current_reg = DR_REG_XDX;
+  // save tls_reg
+  dr_save_reg(drcontext, frag, first, tls_reg, SPILL_SLOT_2);
+  // save current_reg
+  dr_save_reg(drcontext, frag, first, current_reg, SPILL_SLOT_3);
+  // tls_reg = tb
+  dr_insert_read_tls_field(drcontext, frag, first, tls_reg);
+  // current_reg = tb->current
+  INSERT(
+      INSTR_CREATE_mov_ld(drcontext,
+                          opnd_create_reg(current_reg),
+                          OPND_CREATE_MEMPTR(tls_reg, offsetof_current)));
+  // *current_reg = bb_id
+  store = INSERT(
+      INSTR_CREATE_mov_st(drcontext,
+                          OPND_CREATE_MEMPTR(current_reg, 0),
+                          OPND_CREATE_INT32(frag_id)));
+  // current_reg += sizeof(bb_id)
+  INSERT(
+      INSTR_CREATE_lea(drcontext,
+                       opnd_create_reg(current_reg),
+                       OPND_CREATE_MEM_lea(current_reg,
+                                           DR_REG_NULL,
+                                           0,
+                                           sizeof(frag_id_t))));
+  // tb->current = current_reg
+  INSERT(
+      INSTR_CREATE_mov_st(drcontext,
+                          OPND_CREATE_MEMPTR(tls_reg, offsetof_current),
+                          opnd_create_reg(current_reg)));
+  // restore current_reg
+  dr_restore_reg(drcontext, frag, first, current_reg, SPILL_SLOT_3);
+  // restore tls_reg
+  dr_restore_reg(drcontext, frag, first, tls_reg, SPILL_SLOT_2);
+
+#undef INSERT
+
+  instr_info.store_offset = get_offset(drcontext, instrlist_first(frag), store);
+
+#ifdef TRACE_DUMP_BB
+  instrlist_disassemble(drcontext, pc, frag, STDERR);
+#endif
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR,
+             "debug: instrument_frag() done, store_offset=0x%" PRIx32 "\n",
+             instr_info.store_offset);
+#endif
+
+  return instr_info;
+}
+
+/** Checks whether raw_mcontext corresponds to failed guard page access by
+ *  instrumentation of fragment described by fragment_info. */
+bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
+                          dr_fault_fragment_info_t* fragment_info) {
+  struct tag_info_t* tag_info;
+  uint32_t offset;
+
+  dr_mutex_lock(tags_lock);
+  tag_info = hashtable_lookup(&tags, fragment_info->tag);
+  dr_mutex_unlock(tags_lock);
+
+  if(tag_info == NULL) {
+    dr_fprintf(STDERR, "fatal: could not locate tag %p\n", fragment_info->tag);
+    dr_exit_process(1);
+  }
+
+  offset = raw_mcontext->xip - fragment_info->cache_start_pc;
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR,
+             "debug: xip = %p, "
+             "cache = %p, "
+             "offset = 0x%" PRIx32 ", "
+             "store offset = 0x%" PRIx32 "\n",
+             raw_mcontext->xip,
+             fragment_info->cache_start_pc,
+             offset,
+             tag_info->instr_info.store_offset);
+#endif
+  return offset == tag_info->instr_info.store_offset;
+}
+
+/** Restores state after guard page hit. */
+void restore_state(void* drcontext,
+                   dr_mcontext_t* mcontext) {
+  mcontext->xax = dr_read_saved_reg(drcontext, SPILL_SLOT_2);
+  mcontext->xdx = dr_read_saved_reg(drcontext, SPILL_SLOT_3);
+}
+
+// XXX: use exceptions on Windows
+dr_signal_action_t handle_signal(void* drcontext, dr_siginfo_t* siginfo) {
+  dr_fprintf(STDERR, "info: caught signal %u\n", (unsigned int)siginfo->sig);
+  if(siginfo->sig == SIGSEGV) {
+    struct trace_buffer_t* tb;
+
+    if(siginfo->raw_mcontext == NULL) {
+      dr_fprintf(STDERR, "fatal: raw_mcontext missing\n");
+      dr_exit_process(1);
+    }
+#ifdef TRACE_DEBUG
+    dr_fprintf(STDERR, "debug: offending instruction is\n");
+    disassemble(drcontext, siginfo->raw_mcontext->xip, STDERR);
+#endif
+
+    if(is_guard_page_access(siginfo->raw_mcontext,
+                            &siginfo->fault_fragment_info)) {
+#ifdef TRACE_DEBUG
+      dr_fprintf(STDERR, "debug: this is guard page access\n");
+#endif
+
+      // Flush.
+      tb = dr_get_tls_field(siginfo->drcontext);
+      tb_flush(tb);
+      tb_tlv(tb, TYPE_TRACE);
+
+      // Restart fragment.
+      siginfo->raw_mcontext->xip = siginfo->fault_fragment_info.cache_start_pc;
+      restore_state(drcontext, siginfo->raw_mcontext);
+      return DR_SIGNAL_SUPPRESS;
+    }
+  }
+  return DR_SIGNAL_DELIVER;
+}
+
+void handle_restore_state(void* drcontext,
+                          void* tag,
+                          dr_mcontext_t* mcontext,
+                          bool restore_memory,
+                          bool app_code_consistent) {
+#ifdef TRACE_DEBUG
+  dr_fprintf(STDERR, "debug: restoring state for tag=%p..\n", tag);
+#endif
+
+  restore_state(drcontext, mcontext);
 }
 
 /** Common handler for basic blocks and traces. */
@@ -276,7 +436,6 @@ void handle_frag(void* drcontext,
   struct trace_buffer_t* tb;
   frag_id_t deleted_id;
   struct tag_info_t* tag_info;
-  frag_id_t id;
 
   tb = dr_get_tls_field(drcontext);
 
@@ -292,7 +451,6 @@ void handle_frag(void* drcontext,
   } else {
     tag_info_reference(tag_info);
   }
-  id = tag_info->id;
   dr_mutex_unlock(tags_lock);
 
   if(deleted_id) {
@@ -300,11 +458,16 @@ void handle_frag(void* drcontext,
   }
 
   if(new_frag) {
-    record_frag(drcontext, frag, id);
+    record_frag(drcontext, frag, tag_info->id);
   }
 
   if(instrument) {
-    instrument_frag(drcontext, frag, id);
+    struct instr_info_t instr_info;
+
+    instr_info = instrument_frag(drcontext, frag, tag_info->id);
+    if(new_frag) {
+      tag_info->instr_info = instr_info;
+    }
   }
 }
 
@@ -481,6 +644,8 @@ void dr_exit() {
   dr_unregister_bb_event(&handle_bb);
   dr_unregister_trace_event(&handle_trace);
   dr_unregister_delete_event(&handle_delete);
+  dr_unregister_signal_event(&handle_signal);
+  dr_unregister_restore_state_event(&handle_restore_state);
 }
 
 DR_EXPORT void dr_init(client_id_t id) {
@@ -513,4 +678,6 @@ DR_EXPORT void dr_init(client_id_t id) {
   dr_register_bb_event(&handle_bb);
   dr_register_trace_event(&handle_trace);
   dr_register_delete_event(&handle_delete);
+  dr_register_signal_event(&handle_signal);
+  dr_register_restore_state_event(&handle_restore_state);
 }
