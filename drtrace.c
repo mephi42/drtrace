@@ -28,6 +28,9 @@ void* trace_buffer_lock;
 
 /** Information about instrumentation. */
 struct instr_info_t {
+  /** Offset of first instrumentation instruction. */
+  uint32_t first_offset;
+
   /** Offset of fragment id store instruction. */
   uint32_t store_offset;
 
@@ -269,13 +272,15 @@ instr_t* prexl8(instrlist_t* frag, instr_t* where, instr_t* instr, app_pc pc) {
   return instr;
 }
 
-/** Selects registers that should be used for instrumenting given fragment. */
-void select_registers(struct instr_info_t* instr_info, instrlist_t* frag) {
+/** Selects registers that should be used for instrumenting given fragment.
+ *  Returns a place where instrumentation should be inserted. */
+instr_t* configure_instr(struct instr_info_t* instr_info, instrlist_t* frag) {
   // TODO: find dead registers
   instr_info->tls_reg = DR_REG_XAX;
   instr_info->restore_tls_reg = true;
   instr_info->current_reg = DR_REG_XDX;
   instr_info->restore_current_reg = true;
+  return instrlist_first(frag);
 }
 
 /** Adds instrumentation that records fragment execution. */
@@ -284,32 +289,41 @@ struct instr_info_t instrument_frag(void* ctx,
                                     frag_id_t id) {
   const size_t offsetof_current = offsetof(struct trace_buffer_t, current);
   ptr_int_t frag_id = id; // sign-extended for OPND_CREATE_INT32
-  instr_t* first = instrlist_first(frag);
-  app_pc pc = instr_get_app_pc(first);
-  instr_t* store;
+  app_pc xl8_pc;
+  instr_t* where;
+  app_pc pc;
+  instr_t* before;
   struct instr_info_t instr_info;
+  instr_t* store;
+  instr_t* first;
 
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR, "debug: instrument_frag(0x%" PRIxPTR ")\n", frag_id);
 #endif
+
+  xl8_pc = instr_get_app_pc(instrlist_first(frag));
+
 #ifdef TRACE_DUMP_BB
-  instrlist_disassemble(ctx, pc, frag, STDERR);
+  instrlist_disassemble(ctx, xl8_pc, frag, STDERR);
 #endif
 
-#define INSERT(instr) prexl8(frag, first, (instr), pc)
+  where = configure_instr(&instr_info, frag);
+  pc = instr_get_app_pc(where);
+  before = instr_get_prev(where);
+
+#define INSERT(instr) prexl8(frag, where, (instr), xl8_pc)
 
   // Add instrumentation.
-  select_registers(&instr_info, frag);
   // save tls_reg
   if(instr_info.restore_tls_reg) {
-    dr_save_reg(ctx, frag, first, instr_info.tls_reg, SPILL_SLOT_2);
+    dr_save_reg(ctx, frag, where, instr_info.tls_reg, SPILL_SLOT_2);
   }
   // save current_reg
   if(instr_info.restore_current_reg) {
-    dr_save_reg(ctx, frag, first, instr_info.current_reg, SPILL_SLOT_3);
+    dr_save_reg(ctx, frag, where, instr_info.current_reg, SPILL_SLOT_3);
   }
   // tls_reg = tb
-  dr_insert_read_tls_field(ctx, frag, first, instr_info.tls_reg);
+  dr_insert_read_tls_field(ctx, frag, where, instr_info.tls_reg);
   // current_reg = tb->current
   INSERT(
       INSTR_CREATE_mov_ld(
@@ -339,23 +353,38 @@ struct instr_info_t instrument_frag(void* ctx,
           opnd_create_reg(instr_info.current_reg)));
   // restore current_reg
   if(instr_info.restore_current_reg) {
-    dr_restore_reg(ctx, frag, first, instr_info.current_reg, SPILL_SLOT_3);
+    dr_restore_reg(ctx, frag, where, instr_info.current_reg, SPILL_SLOT_3);
   }
   // restore tls_reg
   if(instr_info.restore_tls_reg) {
-    dr_restore_reg(ctx, frag, first, instr_info.tls_reg, SPILL_SLOT_2);
+    dr_restore_reg(ctx, frag, where, instr_info.tls_reg, SPILL_SLOT_2);
   }
 
 #undef INSERT
 
-  instr_info.store_offset = get_offset(ctx, instrlist_first(frag), store);
+  // Compute instrumentation instructions offsets.
+  if(before) {
+    first = instr_get_next(before);
+  } else {
+    first = instrlist_first(frag);
+  }
+  instr_info.first_offset = get_offset(ctx,
+                                       instrlist_first(frag),
+                                       first);
+  instr_info.store_offset = get_offset(ctx,
+                                       instrlist_first(frag),
+                                       store);
 
 #ifdef TRACE_DUMP_BB
-  instrlist_disassemble(ctx, pc, frag, STDERR);
+  instrlist_disassemble(ctx, xl8_pc, frag, STDERR);
 #endif
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
-             "debug: instrument_frag() done, store_offset=0x%" PRIx32 "\n",
+             "debug: instrument_frag() done,"
+             " first_offset=0x%" PRIx32
+             " store_offset=0x%" PRIx32
+             "\n",
+             instr_info.first_offset,
              instr_info.store_offset);
 #endif
 
@@ -377,14 +406,13 @@ struct tag_info_t* find_tag_or_die(void* tag) {
 }
 
 /** Checks whether raw_mcontext corresponds to failed guard page access by
- *  instrumentation of fragment described by fragment_info. */
+ *  instrumentation. */
 bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
-                          dr_fault_fragment_info_t* fragment_info) {
-  struct tag_info_t* tag_info;
+                          struct tag_info_t* tag_info,
+                          app_pc cache_start_pc) {
   uint32_t offset;
 
-  tag_info = find_tag_or_die(fragment_info->tag);
-  offset = raw_mcontext->xip - fragment_info->cache_start_pc;
+  offset = raw_mcontext->xip - cache_start_pc;
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
              "debug: xip = %p, "
@@ -392,7 +420,7 @@ bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
              "offset = 0x%" PRIx32 ", "
              "store offset = 0x%" PRIx32 "\n",
              raw_mcontext->xip,
-             fragment_info->cache_start_pc,
+             cache_start_pc,
              offset,
              tag_info->instr_info.store_offset);
 #endif
@@ -402,11 +430,9 @@ bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
 /** Restores state after guard page hit. */
 void restore_state(void* ctx,
                    dr_mcontext_t* mcontext,
-                   void* tag) {
-  struct tag_info_t* tag_info;
+                   struct tag_info_t* tag_info) {
   struct instr_info_t* instr_info;
 
-  tag_info = find_tag_or_die(tag);
   instr_info = &tag_info->instr_info;
   if(instr_info->restore_tls_reg) {
     reg_set_value(instr_info->tls_reg,
@@ -425,6 +451,7 @@ dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
   dr_fprintf(STDERR, "info: caught signal %u\n", (unsigned int)siginfo->sig);
   if(siginfo->sig == SIGSEGV) {
     struct trace_buffer_t* tb;
+    struct tag_info_t* tag_info;
 
     if(siginfo->raw_mcontext == NULL) {
       dr_fprintf(STDERR, "fatal: raw_mcontext missing\n");
@@ -435,8 +462,10 @@ dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
     disassemble(ctx, siginfo->raw_mcontext->xip, STDERR);
 #endif
 
+    tag_info = find_tag_or_die(siginfo->fault_fragment_info.tag);
     if(is_guard_page_access(siginfo->raw_mcontext,
-                            &siginfo->fault_fragment_info)) {
+                            tag_info,
+                            siginfo->fault_fragment_info.cache_start_pc)) {
 #ifdef TRACE_DEBUG
       dr_fprintf(STDERR, "debug: this is guard page access\n");
 #endif
@@ -446,11 +475,10 @@ dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
       tb_flush(tb);
       tb_tlv(tb, TYPE_TRACE);
 
-      // Restart fragment.
-      siginfo->raw_mcontext->xip = siginfo->fault_fragment_info.cache_start_pc;
-      restore_state(ctx,
-                    siginfo->raw_mcontext,
-                    siginfo->fault_fragment_info.tag);
+      // Restart instrumentation.
+      siginfo->raw_mcontext->xip = siginfo->fault_fragment_info.cache_start_pc +
+                                   tag_info->instr_info.first_offset;
+      restore_state(ctx, siginfo->raw_mcontext, tag_info);
       return DR_SIGNAL_SUPPRESS;
     }
   }
@@ -466,7 +494,7 @@ void handle_restore_state(void* ctx,
   dr_fprintf(STDERR, "debug: restoring state for tag=%p..\n", tag);
 #endif
 
-  restore_state(ctx, mcontext, tag);
+  restore_state(ctx, mcontext, find_tag_or_die(tag));
 }
 
 /** Common handler for basic blocks and traces. */
