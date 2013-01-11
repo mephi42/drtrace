@@ -30,6 +30,18 @@ void* trace_buffer_lock;
 struct instr_info_t {
   /** Offset of fragment id store instruction. */
   uint32_t store_offset;
+
+  /** Register in which TLS field is stored. */
+  reg_id_t tls_reg;
+
+  /** Whether value of tls_reg should be restored. */
+  bool restore_tls_reg;
+
+  /** Register in which current position in buffer is stored. */
+  reg_id_t current_reg;
+
+  /** Whether value of current_reg should be restored. */
+  bool restore_current_reg;
 };
 
 /** Information associated with fragment tags. */
@@ -218,10 +230,7 @@ void record_frag(void* ctx, instrlist_t* frag, frag_id_t id) {
 
     tb_tlv(tb, TYPE_FRAG);
     frag_data = tb->current;
-    current = record_frag_instrs(ctx,
-                                 frag,
-                                 &frag_data->chunks,
-                                 tb_end(tb));
+    current = record_frag_instrs(ctx, frag, &frag_data->chunks, tb_end(tb));
     if(current) {
       frag_data->id = id;
       tb->current = current;
@@ -260,6 +269,15 @@ instr_t* prexl8(instrlist_t* frag, instr_t* where, instr_t* instr, app_pc pc) {
   return instr;
 }
 
+/** Selects registers that should be used for instrumenting given fragment. */
+void select_registers(struct instr_info_t* instr_info, instrlist_t* frag) {
+  // TODO: find dead registers
+  instr_info->tls_reg = DR_REG_XAX;
+  instr_info->restore_tls_reg = true;
+  instr_info->current_reg = DR_REG_XDX;
+  instr_info->restore_current_reg = true;
+}
+
 /** Adds instrumentation that records fragment execution. */
 struct instr_info_t instrument_frag(void* ctx,
                                     instrlist_t* frag,
@@ -281,42 +299,52 @@ struct instr_info_t instrument_frag(void* ctx,
 #define INSERT(instr) prexl8(frag, first, (instr), pc)
 
   // Add instrumentation.
-  // XXX: use dead registers to avoid save/restore.
-  reg_id_t tls_reg = DR_REG_XAX;
-  reg_id_t current_reg = DR_REG_XDX;
+  select_registers(&instr_info, frag);
   // save tls_reg
-  dr_save_reg(ctx, frag, first, tls_reg, SPILL_SLOT_2);
+  if(instr_info.restore_tls_reg) {
+    dr_save_reg(ctx, frag, first, instr_info.tls_reg, SPILL_SLOT_2);
+  }
   // save current_reg
-  dr_save_reg(ctx, frag, first, current_reg, SPILL_SLOT_3);
+  if(instr_info.restore_current_reg) {
+    dr_save_reg(ctx, frag, first, instr_info.current_reg, SPILL_SLOT_3);
+  }
   // tls_reg = tb
-  dr_insert_read_tls_field(ctx, frag, first, tls_reg);
+  dr_insert_read_tls_field(ctx, frag, first, instr_info.tls_reg);
   // current_reg = tb->current
   INSERT(
-      INSTR_CREATE_mov_ld(ctx,
-                          opnd_create_reg(current_reg),
-                          OPND_CREATE_MEMPTR(tls_reg, offsetof_current)));
+      INSTR_CREATE_mov_ld(
+          ctx,
+          opnd_create_reg(instr_info.current_reg),
+          OPND_CREATE_MEMPTR(instr_info.tls_reg, offsetof_current)));
   // *current_reg = bb_id
   store = INSERT(
-      INSTR_CREATE_mov_st(ctx,
-                          OPND_CREATE_MEMPTR(current_reg, 0),
-                          OPND_CREATE_INT32(frag_id)));
+      INSTR_CREATE_mov_st(
+          ctx,
+          OPND_CREATE_MEMPTR(instr_info.current_reg, 0),
+          OPND_CREATE_INT32(frag_id)));
   // current_reg += sizeof(bb_id)
   INSERT(
-      INSTR_CREATE_lea(ctx,
-                       opnd_create_reg(current_reg),
-                       OPND_CREATE_MEM_lea(current_reg,
-                                           DR_REG_NULL,
-                                           0,
-                                           sizeof(frag_id_t))));
+      INSTR_CREATE_lea(
+          ctx,
+          opnd_create_reg(instr_info.current_reg),
+          OPND_CREATE_MEM_lea(instr_info.current_reg,
+                              DR_REG_NULL,
+                              0,
+                              sizeof(frag_id_t))));
   // tb->current = current_reg
   INSERT(
-      INSTR_CREATE_mov_st(ctx,
-                          OPND_CREATE_MEMPTR(tls_reg, offsetof_current),
-                          opnd_create_reg(current_reg)));
+      INSTR_CREATE_mov_st(
+          ctx,
+          OPND_CREATE_MEMPTR(instr_info.tls_reg, offsetof_current),
+          opnd_create_reg(instr_info.current_reg)));
   // restore current_reg
-  dr_restore_reg(ctx, frag, first, current_reg, SPILL_SLOT_3);
+  if(instr_info.restore_current_reg) {
+    dr_restore_reg(ctx, frag, first, instr_info.current_reg, SPILL_SLOT_3);
+  }
   // restore tls_reg
-  dr_restore_reg(ctx, frag, first, tls_reg, SPILL_SLOT_2);
+  if(instr_info.restore_tls_reg) {
+    dr_restore_reg(ctx, frag, first, instr_info.tls_reg, SPILL_SLOT_2);
+  }
 
 #undef INSERT
 
@@ -334,6 +362,20 @@ struct instr_info_t instrument_frag(void* ctx,
   return instr_info;
 }
 
+/** Finds information associated with given tag. */
+struct tag_info_t* find_tag_or_die(void* tag) {
+  struct tag_info_t* tag_info;
+
+  dr_mutex_lock(tags_lock);
+  tag_info = hashtable_lookup(&tags, tag);
+  dr_mutex_unlock(tags_lock);
+  if(tag_info == NULL) {
+    dr_fprintf(STDERR, "fatal: could not locate tag %p\n", tag);
+    dr_exit_process(1);
+  }
+  return tag_info;
+}
+
 /** Checks whether raw_mcontext corresponds to failed guard page access by
  *  instrumentation of fragment described by fragment_info. */
 bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
@@ -341,15 +383,7 @@ bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
   struct tag_info_t* tag_info;
   uint32_t offset;
 
-  dr_mutex_lock(tags_lock);
-  tag_info = hashtable_lookup(&tags, fragment_info->tag);
-  dr_mutex_unlock(tags_lock);
-
-  if(tag_info == NULL) {
-    dr_fprintf(STDERR, "fatal: could not locate tag %p\n", fragment_info->tag);
-    dr_exit_process(1);
-  }
-
+  tag_info = find_tag_or_die(fragment_info->tag);
   offset = raw_mcontext->xip - fragment_info->cache_start_pc;
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
@@ -366,9 +400,24 @@ bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
 }
 
 /** Restores state after guard page hit. */
-void restore_state(void* ctx, dr_mcontext_t* mcontext) {
-  mcontext->xax = dr_read_saved_reg(ctx, SPILL_SLOT_2);
-  mcontext->xdx = dr_read_saved_reg(ctx, SPILL_SLOT_3);
+void restore_state(void* ctx,
+                   dr_mcontext_t* mcontext,
+                   void* tag) {
+  struct tag_info_t* tag_info;
+  struct instr_info_t* instr_info;
+
+  tag_info = find_tag_or_die(tag);
+  instr_info = &tag_info->instr_info;
+  if(instr_info->restore_tls_reg) {
+    reg_set_value(instr_info->tls_reg,
+                  mcontext,
+                  dr_read_saved_reg(ctx, SPILL_SLOT_2));
+  }
+  if(instr_info->restore_current_reg) {
+    reg_set_value(instr_info->current_reg,
+                  mcontext,
+                  dr_read_saved_reg(ctx, SPILL_SLOT_3));
+  }
 }
 
 // XXX: use exceptions on Windows
@@ -399,7 +448,9 @@ dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
 
       // Restart fragment.
       siginfo->raw_mcontext->xip = siginfo->fault_fragment_info.cache_start_pc;
-      restore_state(ctx, siginfo->raw_mcontext);
+      restore_state(ctx,
+                    siginfo->raw_mcontext,
+                    siginfo->fault_fragment_info.tag);
       return DR_SIGNAL_SUPPRESS;
     }
   }
@@ -415,7 +466,7 @@ void handle_restore_state(void* ctx,
   dr_fprintf(STDERR, "debug: restoring state for tag=%p..\n", tag);
 #endif
 
-  restore_state(ctx, mcontext);
+  restore_state(ctx, mcontext, tag);
 }
 
 /** Common handler for basic blocks and traces. */
