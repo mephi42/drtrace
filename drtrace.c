@@ -85,10 +85,10 @@ void tag_info_free_raw(void* tag_info) {
   tag_info_free((struct tag_info_t*)tag_info);
 }
 
-/** drcontext sanity check. */
-void check_drcontext(void* drcontext, const char* s) {
-  if(drcontext == NULL) {
-    dr_fprintf(STDERR, "fatal: current drcontext is NULL in %s\n", s);
+/** ctx sanity check. */
+void check_ctx(void* ctx, const char* s) {
+  if(ctx == NULL) {
+    dr_fprintf(STDERR, "fatal: current ctx is NULL in %s\n", s);
     dr_exit_process(1);
   }
 }
@@ -131,9 +131,7 @@ struct chunk_info_t {
 /** Returns code chunk of length up to _max_, corresponding to longest prefix of
  *  instruction sequence. Changes _instr_ to instruction immediately following
  *  prefix. */
-struct chunk_info_t get_chunk_info(void* drcontext,
-                                   instr_t** instr,
-                                   size_t max) {
+struct chunk_info_t get_chunk_info(void* ctx, instr_t** instr, size_t max) {
   struct chunk_info_t chunk_info = { 0, 0 };
 
   for(; *instr; *instr = instr_get_next(*instr)) {
@@ -148,7 +146,7 @@ struct chunk_info_t get_chunk_info(void* drcontext,
         break;
       }
     }
-    size = chunk_info.size + instr_length(drcontext, *instr);
+    size = chunk_info.size + instr_length(ctx, *instr);
     if(size > max) {
       break;
     }
@@ -161,10 +159,7 @@ struct chunk_info_t get_chunk_info(void* drcontext,
  *  into buffer [current, end). Changes _instr_ to instruction immediately
  *  following prefix. Returns next position in the buffer, or NULL if there is
  *  not enough space. */
-void* record_chunk(void* drcontext,
-                   instr_t** instr,
-                   void* current,
-                   void* end) {
+void* record_chunk(void* ctx, instr_t** instr, void* current, void* end) {
   struct code_chunk_t* chunk;
   ssize_t max;
   struct chunk_info_t chunk_info;
@@ -177,7 +172,7 @@ void* record_chunk(void* drcontext,
   if(max > UINT8_MAX) {
     max = UINT8_MAX;
   }
-  chunk_info = get_chunk_info(drcontext, instr, max);
+  chunk_info = get_chunk_info(ctx, instr, max);
   if(chunk_info.size == 0) {
     return NULL;
   }
@@ -190,7 +185,7 @@ void* record_chunk(void* drcontext,
 /** Records code chunks corresponding to given fragment into buffer
  *  [current, end). Returns next position in the buffer, or NULL if there is
  *  not enough space. */
-void* record_frag_instrs(void* drcontext,
+void* record_frag_instrs(void* ctx,
                          instrlist_t* frag,
                          void* current,
                          void* end) {
@@ -202,7 +197,7 @@ void* record_frag_instrs(void* drcontext,
 
   instr = instrlist_first(frag);
   while(instr) {
-    current = record_chunk(drcontext, &instr, current, end);
+    current = record_chunk(ctx, &instr, current, end);
     if(!current) {
       break;
     }
@@ -211,13 +206,11 @@ void* record_frag_instrs(void* drcontext,
 }
 
 /** Records given fragment. */
-void record_frag(void* drcontext,
-                 instrlist_t* frag,
-                 frag_id_t id) {
+void record_frag(void* ctx, instrlist_t* frag, frag_id_t id) {
   bool flushed;
   struct trace_buffer_t* tb;
 
-  tb = dr_get_tls_field(drcontext);
+  tb = dr_get_tls_field(ctx);
   tb_tlv_complete(tb);
   for(flushed = false; ; tb_flush(tb), flushed = true) {
     struct frag_t* frag_data;
@@ -225,7 +218,7 @@ void record_frag(void* drcontext,
 
     tb_tlv(tb, TYPE_FRAG);
     frag_data = tb->current;
-    current = record_frag_instrs(drcontext,
+    current = record_frag_instrs(ctx,
                                  frag,
                                  &frag_data->chunks,
                                  tb_end(tb));
@@ -248,13 +241,13 @@ void record_frag(void* drcontext,
 /** Returns offset, in bytes, between starts of the first and the second
  *  instruction. Returns -1 if the second instruction does not follow the first
  *  instruction. */
-int get_offset(void* drcontext, instr_t* first, instr_t* second) {
+int get_offset(void* ctx, instr_t* first, instr_t* second) {
   int offset = 0;
   while(first != second) {
     if(first == NULL) {
       return -1;
     }
-    offset += instr_length(drcontext, first);
+    offset += instr_length(ctx, first);
     first = instr_get_next(first);
   }
   return offset;
@@ -268,7 +261,7 @@ instr_t* prexl8(instrlist_t* frag, instr_t* where, instr_t* instr, app_pc pc) {
 }
 
 /** Adds instrumentation that records fragment execution. */
-struct instr_info_t instrument_frag(void* drcontext,
+struct instr_info_t instrument_frag(void* ctx,
                                     instrlist_t* frag,
                                     frag_id_t id) {
   const size_t offsetof_current = offsetof(struct trace_buffer_t, current);
@@ -282,7 +275,7 @@ struct instr_info_t instrument_frag(void* drcontext,
   dr_fprintf(STDERR, "debug: instrument_frag(0x%" PRIxPTR ")\n", frag_id);
 #endif
 #ifdef TRACE_DUMP_BB
-  instrlist_disassemble(drcontext, pc, frag, STDERR);
+  instrlist_disassemble(ctx, pc, frag, STDERR);
 #endif
 
 #define INSERT(instr) prexl8(frag, first, (instr), pc)
@@ -292,24 +285,24 @@ struct instr_info_t instrument_frag(void* drcontext,
   reg_id_t tls_reg = DR_REG_XAX;
   reg_id_t current_reg = DR_REG_XDX;
   // save tls_reg
-  dr_save_reg(drcontext, frag, first, tls_reg, SPILL_SLOT_2);
+  dr_save_reg(ctx, frag, first, tls_reg, SPILL_SLOT_2);
   // save current_reg
-  dr_save_reg(drcontext, frag, first, current_reg, SPILL_SLOT_3);
+  dr_save_reg(ctx, frag, first, current_reg, SPILL_SLOT_3);
   // tls_reg = tb
-  dr_insert_read_tls_field(drcontext, frag, first, tls_reg);
+  dr_insert_read_tls_field(ctx, frag, first, tls_reg);
   // current_reg = tb->current
   INSERT(
-      INSTR_CREATE_mov_ld(drcontext,
+      INSTR_CREATE_mov_ld(ctx,
                           opnd_create_reg(current_reg),
                           OPND_CREATE_MEMPTR(tls_reg, offsetof_current)));
   // *current_reg = bb_id
   store = INSERT(
-      INSTR_CREATE_mov_st(drcontext,
+      INSTR_CREATE_mov_st(ctx,
                           OPND_CREATE_MEMPTR(current_reg, 0),
                           OPND_CREATE_INT32(frag_id)));
   // current_reg += sizeof(bb_id)
   INSERT(
-      INSTR_CREATE_lea(drcontext,
+      INSTR_CREATE_lea(ctx,
                        opnd_create_reg(current_reg),
                        OPND_CREATE_MEM_lea(current_reg,
                                            DR_REG_NULL,
@@ -317,20 +310,20 @@ struct instr_info_t instrument_frag(void* drcontext,
                                            sizeof(frag_id_t))));
   // tb->current = current_reg
   INSERT(
-      INSTR_CREATE_mov_st(drcontext,
+      INSTR_CREATE_mov_st(ctx,
                           OPND_CREATE_MEMPTR(tls_reg, offsetof_current),
                           opnd_create_reg(current_reg)));
   // restore current_reg
-  dr_restore_reg(drcontext, frag, first, current_reg, SPILL_SLOT_3);
+  dr_restore_reg(ctx, frag, first, current_reg, SPILL_SLOT_3);
   // restore tls_reg
-  dr_restore_reg(drcontext, frag, first, tls_reg, SPILL_SLOT_2);
+  dr_restore_reg(ctx, frag, first, tls_reg, SPILL_SLOT_2);
 
 #undef INSERT
 
-  instr_info.store_offset = get_offset(drcontext, instrlist_first(frag), store);
+  instr_info.store_offset = get_offset(ctx, instrlist_first(frag), store);
 
 #ifdef TRACE_DUMP_BB
-  instrlist_disassemble(drcontext, pc, frag, STDERR);
+  instrlist_disassemble(ctx, pc, frag, STDERR);
 #endif
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
@@ -373,14 +366,13 @@ bool is_guard_page_access(dr_mcontext_t* raw_mcontext,
 }
 
 /** Restores state after guard page hit. */
-void restore_state(void* drcontext,
-                   dr_mcontext_t* mcontext) {
-  mcontext->xax = dr_read_saved_reg(drcontext, SPILL_SLOT_2);
-  mcontext->xdx = dr_read_saved_reg(drcontext, SPILL_SLOT_3);
+void restore_state(void* ctx, dr_mcontext_t* mcontext) {
+  mcontext->xax = dr_read_saved_reg(ctx, SPILL_SLOT_2);
+  mcontext->xdx = dr_read_saved_reg(ctx, SPILL_SLOT_3);
 }
 
 // XXX: use exceptions on Windows
-dr_signal_action_t handle_signal(void* drcontext, dr_siginfo_t* siginfo) {
+dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
   dr_fprintf(STDERR, "info: caught signal %u\n", (unsigned int)siginfo->sig);
   if(siginfo->sig == SIGSEGV) {
     struct trace_buffer_t* tb;
@@ -391,7 +383,7 @@ dr_signal_action_t handle_signal(void* drcontext, dr_siginfo_t* siginfo) {
     }
 #ifdef TRACE_DEBUG
     dr_fprintf(STDERR, "debug: offending instruction is\n");
-    disassemble(drcontext, siginfo->raw_mcontext->xip, STDERR);
+    disassemble(ctx, siginfo->raw_mcontext->xip, STDERR);
 #endif
 
     if(is_guard_page_access(siginfo->raw_mcontext,
@@ -407,14 +399,14 @@ dr_signal_action_t handle_signal(void* drcontext, dr_siginfo_t* siginfo) {
 
       // Restart fragment.
       siginfo->raw_mcontext->xip = siginfo->fault_fragment_info.cache_start_pc;
-      restore_state(drcontext, siginfo->raw_mcontext);
+      restore_state(ctx, siginfo->raw_mcontext);
       return DR_SIGNAL_SUPPRESS;
     }
   }
   return DR_SIGNAL_DELIVER;
 }
 
-void handle_restore_state(void* drcontext,
+void handle_restore_state(void* ctx,
                           void* tag,
                           dr_mcontext_t* mcontext,
                           bool restore_memory,
@@ -423,11 +415,11 @@ void handle_restore_state(void* drcontext,
   dr_fprintf(STDERR, "debug: restoring state for tag=%p..\n", tag);
 #endif
 
-  restore_state(drcontext, mcontext);
+  restore_state(ctx, mcontext);
 }
 
 /** Common handler for basic blocks and traces. */
-void handle_frag(void* drcontext,
+void handle_frag(void* ctx,
                  void* tag,
                  instrlist_t* frag,
                  bool new_frag,
@@ -437,7 +429,7 @@ void handle_frag(void* drcontext,
   frag_id_t deleted_id;
   struct tag_info_t* tag_info;
 
-  tb = dr_get_tls_field(drcontext);
+  tb = dr_get_tls_field(ctx);
 
   deleted_id = 0;
   dr_mutex_lock(tags_lock);
@@ -458,20 +450,20 @@ void handle_frag(void* drcontext,
   }
 
   if(new_frag) {
-    record_frag(drcontext, frag, tag_info->id);
+    record_frag(ctx, frag, tag_info->id);
   }
 
   if(instrument) {
     struct instr_info_t instr_info;
 
-    instr_info = instrument_frag(drcontext, frag, tag_info->id);
+    instr_info = instrument_frag(ctx, frag, tag_info->id);
     if(new_frag) {
       tag_info->instr_info = instr_info;
     }
   }
 }
 
-dr_emit_flags_t handle_bb(void* drcontext,
+dr_emit_flags_t handle_bb(void* ctx,
                           void* tag,
                           instrlist_t* bb,
                           bool for_trace,
@@ -487,7 +479,7 @@ dr_emit_flags_t handle_bb(void* drcontext,
              translating);
 #endif
 
-  check_drcontext(drcontext, "handle_bb");
+  check_ctx(ctx, "handle_bb");
 
   new_frag = true;
   instrument = true;
@@ -501,12 +493,12 @@ dr_emit_flags_t handle_bb(void* drcontext,
     new_frag = false;
   }
 
-  handle_frag(drcontext, tag, bb, new_frag, instrument, 0);
+  handle_frag(ctx, tag, bb, new_frag, instrument, 0);
 
   return DR_EMIT_DEFAULT;
 }
 
-dr_emit_flags_t handle_trace(void* drcontext,
+dr_emit_flags_t handle_trace(void* ctx,
                              void* tag,
                              instrlist_t* trace,
                              bool translating) {
@@ -517,14 +509,14 @@ dr_emit_flags_t handle_trace(void* drcontext,
              translating);
 #endif
 
-  check_drcontext(drcontext, "handle_trace");
+  check_ctx(ctx, "handle_trace");
 
-  handle_frag(drcontext, tag, trace, !translating, true, FRAG_ID_MSB);
+  handle_frag(ctx, tag, trace, !translating, true, FRAG_ID_MSB);
 
   return DR_EMIT_DEFAULT;
 }
 
-void handle_delete(void* drcontext, void* tag) {
+void handle_delete(void* ctx, void* tag) {
   struct tag_info_t* tag_info;
   frag_id_t id;
   struct trace_buffer_t* tb;
@@ -549,11 +541,11 @@ void handle_delete(void* drcontext, void* tag) {
   hashtable_remove(&tags, tag);
   dr_mutex_unlock(tags_lock);
 
-  if(drcontext == NULL) {
+  if(ctx == NULL) {
     dr_mutex_lock(trace_buffer_lock);
     tb = trace_buffer;
   } else {
-    tb = dr_get_tls_field(drcontext);
+    tb = dr_get_tls_field(ctx);
   }
   record_deletion(tb, id);
   if(tb == trace_buffer) {
@@ -598,32 +590,32 @@ void tb_delete(struct trace_buffer_t* tb) {
   }
 }
 
-void handle_thread_init(void* drcontext) {
+void handle_thread_init(void* ctx) {
   thread_id_t thread_id;
   struct trace_buffer_t* tb;
 
-  check_drcontext(drcontext, "handle_thread_init");
-  thread_id = dr_get_thread_id(drcontext);
+  check_ctx(ctx, "handle_thread_init");
+  thread_id = dr_get_thread_id(ctx);
   dr_fprintf(STDERR,
              "info: initializing thread 0x%" PRIx64 "..\n",
              (uint64_t)thread_id);
   tb = tb_create(thread_id);
-  dr_set_tls_field(drcontext, tb);
+  dr_set_tls_field(ctx, tb);
   tb_tlv(tb, TYPE_TRACE);
 }
 
-void handle_thread_exit(void* drcontext) {
+void handle_thread_exit(void* ctx) {
   thread_id_t thread_id;
   struct trace_buffer_t* tb;
 
-  check_drcontext(drcontext, "handle_thread_exit");
-  thread_id = dr_get_thread_id(drcontext);
+  check_ctx(ctx, "handle_thread_exit");
+  thread_id = dr_get_thread_id(ctx);
   dr_fprintf(STDERR,
              "info: cleaning up thread 0x%" PRIx64 "..\n",
              (uint64_t)thread_id);
-  tb = dr_get_tls_field(drcontext);
+  tb = dr_get_tls_field(ctx);
   tb_delete(tb);
-  dr_set_tls_field(drcontext, NULL);
+  dr_set_tls_field(ctx, NULL);
 }
 
 void dr_exit() {
