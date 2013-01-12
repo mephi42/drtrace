@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "drtrace.h"
 #include "trace_buffer.h"
 
 //#define TRACE_DEBUG
@@ -289,9 +288,11 @@ struct instr_info_t instrument_frag(void* ctx,
                                     frag_id_t id) {
   const size_t offsetof_current = offsetof(struct trace_buffer_t, current);
   ptr_int_t frag_id = id; // sign-extended for OPND_CREATE_INT32
+#ifdef TRACE_DEBUG
+  app_pc frag_pc;
+#endif
   app_pc xl8_pc;
   instr_t* where;
-  app_pc pc;
   instr_t* before;
   struct instr_info_t instr_info;
   instr_t* store;
@@ -299,16 +300,12 @@ struct instr_info_t instrument_frag(void* ctx,
 
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR, "debug: instrument_frag(0x%" PRIxPTR ")\n", frag_id);
-#endif
-
-  xl8_pc = instr_get_app_pc(instrlist_first(frag));
-
-#ifdef TRACE_DUMP_BB
-  instrlist_disassemble(ctx, xl8_pc, frag, STDERR);
+  frag_pc = instr_get_app_pc(instrlist_first(frag));
+  instrlist_disassemble(ctx, frag_pc, frag, STDERR);
 #endif
 
   where = configure_instr(&instr_info, frag);
-  pc = instr_get_app_pc(where);
+  xl8_pc = instr_get_app_pc(where);
   before = instr_get_prev(where);
 
 #define INSERT(instr) prexl8(frag, where, (instr), xl8_pc)
@@ -376,7 +373,7 @@ struct instr_info_t instrument_frag(void* ctx,
                                        store);
 
 #ifdef TRACE_DUMP_BB
-  instrlist_disassemble(ctx, xl8_pc, frag, STDERR);
+  instrlist_disassemble(ctx, frag_pc, frag, STDERR);
 #endif
 #ifdef TRACE_DEBUG
   dr_fprintf(STDERR,
@@ -453,6 +450,11 @@ dr_signal_action_t handle_signal(void* ctx, dr_siginfo_t* siginfo) {
     struct trace_buffer_t* tb;
     struct tag_info_t* tag_info;
 
+#ifdef TRACE_DEBUG
+    dr_fprintf(STDERR,
+               "debug: this is SIGSEGV and faulting address is " PFX "\n",
+               siginfo->access_address);
+#endif
     if(siginfo->raw_mcontext == NULL) {
       dr_fprintf(STDERR, "fatal: raw_mcontext missing\n");
       dr_exit_process(1);

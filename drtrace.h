@@ -1,6 +1,21 @@
 #pragma once
 
+#include <inttypes.h>
 #include <stdint.h>
+
+#if defined(DRTRACE_X86_32)
+typedef uint32_t drtrace_uintptr_t;
+#define DRTRACE_UINTPTR_FMT "0x%" PRIx32
+#elif defined(DRTRACE_X86_64)
+typedef uint64_t drtrace_uintptr_t;
+#define DRTRACE_UINTPTR_FMT "0x%" PRIx64
+#else
+#error Neither DRTRACE_X86_32 nor DRTRACE_X86_64 specified
+#endif
+
+/** Aligns pointer to power-of-2 boundary. */
+#define ALIGN_FORWARD(x, n) \
+    ((((uintptr_t)(x)) + ((n) - 1)) & (~((uintptr_t)(n) - 1)))
 
 /** Fragment identifier. */
 typedef int32_t frag_id_t;
@@ -10,7 +25,7 @@ typedef int32_t frag_id_t;
 /** Contiguous code chunk. */
 struct code_chunk_t {
   /** Address. */
-  uintptr_t pc;
+  drtrace_uintptr_t pc;
 
   /** Size of raw code. */
   uint8_t size;
@@ -55,7 +70,10 @@ struct block_t {
   uint32_t crc32;
 
   /** Associated thread identifier. */
-  uint64_t thread_id;
+  uint32_t thread_id;
+
+  /** Padding. */
+  uint8_t reserved[4];
 
   /** Data. */
   uint8_t data[];
@@ -72,3 +90,11 @@ struct tlv_t {
   /** Value. */
   uint8_t value[];
 };
+
+static __attribute__ ((unused)) struct tlv_t* aligned_tlv(void* p) {
+  return (struct tlv_t*)ALIGN_FORWARD(p, sizeof(drtrace_uintptr_t));
+}
+
+static __attribute__ ((unused)) struct block_t* aligned_block(void* p) {
+  return (struct block_t*)ALIGN_FORWARD(p, sizeof(drtrace_uintptr_t));
+}

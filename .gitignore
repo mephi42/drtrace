@@ -5,4 +5,5 @@ cmake_install.cmake
 ldscript
 libdrtrace.so
 trace.out
-drtrace_view
+drtrace_view32
+drtrace_view64

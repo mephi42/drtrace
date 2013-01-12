@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <string.h>
 
 #include "crc32.h"
 #include "trace_buffer.h"
@@ -15,8 +16,14 @@ void tb_flush(struct trace_buffer_t* tb) {
   size_t size;
   int64 pos;
   size_t written;
+  void* aligned_current;
 
   tb_tlv_complete(tb);
+
+  // Align current position to block boundary.
+  aligned_current = aligned_block(tb->current);
+  memset(tb->current, 'X', aligned_current - tb->current);
+  tb->current = aligned_current;
 
   size = tb->current - (void*)&tb->block;
   if(size == sizeof(struct block_t)) {
@@ -62,14 +69,28 @@ void tb_init(struct trace_buffer_t* tb,
   tb->file = file;
   tb->mutex = mutex;
   tb->block.thread_id = (uint64_t)thread_id;
+  memset(&tb->block.reserved, 'X', sizeof(tb->block.reserved));
   tb->current_tlv = NULL;
   tb->current = tb + 1;
 }
 
 void tb_tlv(struct trace_buffer_t* tb, uint32_t type) {
+  void* original_current;
+
+  // Align current position.
+  original_current = tb->current;
+  tb->current = aligned_tlv(tb->current);
+
+  // Check if there is space for a new TLV.
   if(tb_available(tb) < sizeof(struct tlv_t)) {
+    // Flush; assume resulting position is properly aligned.
     tb_flush(tb);
+  } else {
+    // Fill padding.
+    memset(original_current, 'X', tb->current - original_current);
   }
+
+  // Set up a new TLV.
   tb->current_tlv = tb->current;
   tb->current_tlv->type = type;
   tb->current = tb->current_tlv + 1;

@@ -67,18 +67,21 @@ void dump_code(struct frag_t* frag) {
     instr_t instr;
     instr_init(GLOBAL_DCONTEXT, &instr);
     for(size_t offset = 0; offset < chunk->size; ) {
-      app_pc pc = (app_pc)chunk->pc + offset;
-      fprintf(stderr, "%p: ", pc);
+      drtrace_uintptr_t pc = chunk->pc + offset;
+      fprintf(stderr, DRTRACE_UINTPTR_FMT ": ", pc);
       instr_reset(GLOBAL_DCONTEXT, &instr);
-      pc = decode_from_copy(GLOBAL_DCONTEXT, &chunk->code[offset], pc, &instr);
-      if(pc == NULL) {
+      byte* next = decode_from_copy(GLOBAL_DCONTEXT,
+                                    &chunk->code[offset],
+                                    (byte*)(uintptr_t)pc,
+                                    &instr);
+      if(next == NULL) {
         fprintf(stderr, "???\n");
         break;
       }
       char buf[256];
       instr_disassemble_to_buffer(GLOBAL_DCONTEXT, &instr, buf, sizeof(buf));
       fprintf(stderr, "%s\n", buf);
-      offset = pc - (app_pc)&chunk->code;
+      offset = next - &chunk->code[0];
     }
     instr_free(GLOBAL_DCONTEXT, &instr);
   }
@@ -135,11 +138,10 @@ int main(int argc, char** argv) {
   size_t block_count = 0;
   size_t tlv_count = 0;
   std::unordered_map<frag_id_t, frag_entry_t> frags;
-  std::unordered_map<uint32_t, std::list<struct block_t*>> crc_blocks;
   size_t frags_executed = 0;
   for(struct block_t* block = (struct block_t*)p;
       block < trace_end && rc == 0;
-      block = (struct block_t*)((char*)block + block->length),
+      block = aligned_block((char*)block + block->length),
       block_count++) {
     // Validate block length.
     void* block_end = (char*)block + block->length;
@@ -179,13 +181,12 @@ int main(int argc, char** argv) {
       rc = 1;
       break;
     }
-    crc_blocks[block->crc32].push_back(block);
 
     struct tlv_t* previous_tlv = NULL;
     for(struct tlv_t* tlv = (tlv_t*)&block->data;
         tlv < block_end && rc == 0;
         previous_tlv = tlv,
-        tlv = (struct tlv_t*)((char*)tlv + tlv->length),
+        tlv = aligned_tlv((char*)tlv + tlv->length),
         tlv_count++) {
       switch(tlv->type) {
       case TYPE_FRAG: {
@@ -276,14 +277,6 @@ int main(int argc, char** argv) {
   fprintf(stderr, "info: tlv count = %zu\n", tlv_count);
   fprintf(stderr, "info: frag count = %zu\n", frags.size());
   fprintf(stderr, "info: frags executed = %zu\n", frags_executed);
-
-  for(auto it = crc_blocks.begin(); it != crc_blocks.end(); ++it) {
-    if(it->second.size() > 1) {
-      fprintf(stderr,
-              "info: there are multiple blocks with crc 0x%" PRIx32 "\n",
-              it->first);
-    }
-  }
 
   return rc;
 }

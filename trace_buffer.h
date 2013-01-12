@@ -2,6 +2,15 @@
 
 #include <dr_api.h>
 
+// Set drtrace mode according to client target.
+#if defined(X86_32)
+#define DRTRACE_X86_32
+#elif defined(X86_64)
+#define DRTRACE_X86_64
+#else
+#error Neither X86_32, nor X86_64 defined
+#endif
+
 #include "drtrace.h"
 
 /** Header of trace buffer. Immediately followed by raw data. */
